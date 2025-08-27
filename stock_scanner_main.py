@@ -345,19 +345,28 @@ def json_filter_tab(df):
     # JSON Filter Editor
     json_data = json_filter_ui.render_json_editor()
     
+    # Show validation feedback and preview even if json_data is None
+    # This ensures they remain visible after saving
     if json_data is not None:
+        # Store validated JSON in session state to preserve across re-renders
+        st.session_state.last_validated_json = json_data
+    
+    # Use the last validated JSON if available
+    display_json = st.session_state.get('last_validated_json', None) if json_data is None else json_data
+    
+    if display_json is not None:
         # Show validation feedback
-        json_filter_ui.render_validation_feedback(json_data)
+        json_filter_ui.render_validation_feedback(display_json)
         
         # Show filter preview
-        json_filter_ui.render_filter_preview(json_data, df)
+        json_filter_ui.render_filter_preview(display_json, df)
         
         # Apply filter button
         if st.button("🔍 Apply JSON Filter", type="primary"):
             try:
                 # Apply filter using advanced filter engine
                 with st.spinner("Applying JSON filter..."):
-                    filtered_data = advanced_filter_engine.apply_filter(df, json_data)
+                    filtered_data = advanced_filter_engine.apply_filter(df, display_json)
                     
                     # Apply date range filter if specified
                     if date_range and 'date' in df.columns:
@@ -369,7 +378,7 @@ def json_filter_tab(df):
                 
                 # Store results in session state
                 st.session_state.scan_results = filtered_data
-                st.session_state.current_filter = json_data
+                st.session_state.current_filter = display_json
                 st.session_state.date_range = date_range
                 st.success(f"✅ JSON filter applied! Found {len(filtered_data)} matches.")
                 
@@ -380,13 +389,16 @@ def json_filter_tab(df):
         # Save filter option
         col1, col2 = st.columns(2)
         with col1:
-            filter_name = st.text_input("Filter Name", placeholder="My JSON Filter")
+            filter_name = st.text_input("Filter Name", placeholder="My JSON Filter",
+                                       key="json_filter_name")
             if st.button("💾 Save JSON Filter"):
                 if filter_name:
                     # Convert JSON to string for saving
-                    filter_string = json.dumps(json_data, indent=2)
+                    filter_string = json.dumps(display_json, indent=2)
                     st.session_state.saved_filters[filter_name] = filter_string
                     st.success(f"✅ JSON filter '{filter_name}' saved!")
+                    # Clear the filter name input after saving
+                    st.session_state.json_filter_name = ""
                 else:
                     st.warning("Please enter a filter name.")
 

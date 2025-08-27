@@ -49,13 +49,20 @@ class JSONFilterUI:
                 ]
             }
             
+            # Use session state to preserve user input across re-renders
+            if 'json_filter_input' not in st.session_state:
+                st.session_state.json_filter_input = json.dumps(default_json, indent=2)
+            
             # JSON text area
             json_input = st.text_area(
                 "Enter JSON Filter",
-                value=json.dumps(default_json, indent=2),
+                value=st.session_state.json_filter_input,
                 height=300,
                 help="Paste your JSON filter here. Use the examples on the right for reference."
             )
+            
+            # Update session state when text area changes
+            st.session_state.json_filter_input = json_input
             
             # Parse button
             if st.button("🔍 Validate & Parse JSON", type="primary"):
