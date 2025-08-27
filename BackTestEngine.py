@@ -721,6 +721,225 @@ def run_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profi
     if not trades:
         return pd.DataFrame(), leverage_warnings
     return pd.DataFrame(trades).sort_values(by='Exit Date').reset_index(drop=True), leverage_warnings
+
+def run_vectorized_single_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profit_pct=None,
+                                 one_trade_per_instrument=False, initial_capital=100000, sizing_method='equal_weight',
+                                 sizing_params=None, signal_type='long', allow_leverage=False):
+    """
+    Vectorized version of single backtest
+    """
+    if sizing_params is None:
+        sizing_params = {}
+    
+    trades = []
+    portfolio_value = initial_capital
+    active_trades = {}
+    open_positions_value = 0.0
+    
+    # Prepare vectorized data
+    st.info("Preparing data for vectorized processing...")
+    vectorized_data = prepare_vectorized_data(ohlcv_df)
+    
+    # Convert sizing method to code for numba
+    method_map = {'equal_weight': 0, 'fixed_amount': 1, 'percent_risk': 2,
+                  'volatility_target': 3, 'atr_based': 4, 'kelly_criterion': 5}
+    sizing_code = method_map.get(sizing_method, 0)
+    
+    # Process each signal
+    for _, signal in signals_df.iterrows():
+        ticker = signal['Ticker']
+        entry_date_ordinal = pd.Timestamp(signal['Date']).toordinal()
+        
+        # Skip if one trade per instrument and active trade exists
+        if one_trade_per_instrument and ticker in active_trades:
+            if entry_date_ordinal <= active_trades[ticker]:
+                continue
+            else:
+                del active_trades[ticker]
+        
+        if ticker not in vectorized_data:
+            continue
+            
+        ticker_prices = vectorized_data[ticker]
+        
+        # Find entry point
+        entry_indices = np.where(ticker_prices[:, 0] >= entry_date_ordinal)[0]
+        if len(entry_indices) == 0:
+            continue
+            
+        entry_idx = entry_indices[0]
+        # Check if there's enough data for the full holding period
+        if entry_idx + holding_period + 1 > len(ticker_prices):
+            continue
+            
+        entry_price = ticker_prices[entry_idx, 3]
+        
+        # Calculate position size (pass user Kelly parameters if available)
+        kelly_win_rate = sizing_params.get('kelly_win_rate', 55)
+        kelly_avg_win = sizing_params.get('kelly_avg_win', 8)
+        kelly_avg_loss = sizing_params.get('kelly_avg_loss', -4)
+        
+        shares = calculate_position_size_vectorized(
+            sizing_code, entry_price, portfolio_value,
+            0.20, entry_price * 0.02, sizing_params.get('risk_per_trade', 2.0),
+            sizing_params.get('fixed_amount', 10000),
+            sizing_params.get('volatility_target', 0.15),
+            0.05,  # Default stop loss assumption for percent risk calculation
+            allow_leverage,  # Use user's leverage setting
+            kelly_win_rate, kelly_avg_win, kelly_avg_loss,
+            open_positions_value # Pass open_positions_value
+        )
+        
+        position_value = shares * entry_price
+        
+        # For no leverage mode, check if we have enough capital
+        if not allow_leverage and open_positions_value + position_value > portfolio_value:
+            continue # Skip this trade as it would require leverage
+
+        # Update open positions value
+        open_positions_value += position_value
+
+        
+        # Calculate trade outcome
+        exit_idx, exit_price, exit_reason = calculate_trade_outcomes_vectorized(
+            ticker_prices, entry_idx, holding_period, stop_loss_pct, take_profit_pct, signal_type
+        )
+        
+        if exit_idx > 0 and exit_price > 0:
+            # Calculate P&L
+            if signal_type == 'long':
+                pl_dollar = (exit_price - entry_price) * shares
+                pl_pct = ((exit_price - entry_price) / entry_price) * 100
+            else:  # short
+                pl_dollar = (entry_price - exit_price) * shares
+                pl_pct = ((entry_price - exit_price) / entry_price) * 100
+            
+            portfolio_value += pl_dollar
+            
+            # Update open positions value when trade exits
+            open_positions_value -= position_value
+
+            # Convert ordinal dates back to datetime for consistency with original format
+            entry_date = pd.Timestamp.fromordinal(int(ticker_prices[entry_idx, 0]))
+            exit_date = pd.Timestamp.fromordinal(int(ticker_prices[exit_idx, 0]))
+            
+
+            # Record trade with comprehensive data matching original format
+            trades.append({
+                'Ticker': ticker,
+                'Signal Type': signal_type.title(),
+                'Entry Date': entry_date,
+                'Entry Price': entry_price,
+                'Exit Date': exit_date,
+                'Exit Price': exit_price,
+                'Shares': shares,
+                'Position Value': position_value,
+                'P&L ($)': pl_dollar,
+                'Profit/Loss (%)': pl_pct,
+                'Exit Reason': exit_reason,
+                'Days Held': exit_idx - entry_idx,
+                'Portfolio Value': portfolio_value,
+                'Signal Date': entry_date  # Same as entry date for simplicity
+            })
+            
+            # Update active trades
+            if one_trade_per_instrument:
+                active_trades[ticker] = ticker_prices[exit_idx, 0]
+    
+    # Return DataFrame or empty DataFrame
+    if not trades:
+        return pd.DataFrame(), []
+    return pd.DataFrame(trades).sort_values(by='Exit Date').reset_index(drop=True), []
+def run_multiprocessed_single_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profit_pct=None, 
+                                     one_trade_per_instrument=False, initial_capital=100000, sizing_method='equal_weight',
+                                     sizing_params=None, signal_type='long', allow_leverage=False, max_workers=None, 
+                                     use_vectorized=False):
+    """
+    Run single backtest with multiprocessing support by processing each instrument in parallel.
+    
+    Parameters:
+    - ohlcv_df: DataFrame with OHLCV data
+    - signals_df: DataFrame with trading signals
+    - holding_period: int, number of days to hold positions
+    - stop_loss_pct: float, stop loss percentage
+    - take_profit_pct: float or None, take profit percentage
+    - one_trade_per_instrument: bool, whether to allow only one trade per instrument at a time
+    - initial_capital: float, initial portfolio capital
+    - sizing_method: str, position sizing method
+    - sizing_params: dict, parameters for position sizing
+    - signal_type: str, 'long' or 'short'
+    - allow_leverage: bool, whether to allow leverage
+    - max_workers: int or None, maximum number of worker processes
+    - use_vectorized: bool, whether to use vectorized backtesting
+    
+    Returns:
+    - DataFrame with trade results, sorted by exit date
+    """
+    # Handle the case where max_workers is None by setting it to a reasonable default
+    if max_workers is None:
+        max_workers = min(mp.cpu_count() - 1, 8)  # Leave one core free, cap at 8
+    
+    # Group signals by instrument
+    instrument_groups = signals_df.groupby('Ticker')
+    
+    # Create arguments for each process
+    process_args = []
+    for ticker, ticker_signals in instrument_groups:
+        # Filter OHLCV data for this ticker
+        ticker_ohlcv = ohlcv_df[ohlcv_df['Ticker'] == ticker]
+        
+        # Skip if no OHLCV data for this ticker
+        if ticker_ohlcv.empty:
+            continue
+            
+        # Prepare arguments for this process
+        args = (
+            ticker_ohlcv,
+            ticker_signals,
+            holding_period,
+            stop_loss_pct,
+            take_profit_pct,
+            one_trade_per_instrument,
+            initial_capital,
+            sizing_method,
+            sizing_params,
+            signal_type,
+            allow_leverage
+        )
+        process_args.append(args)
+    
+    # If no valid instruments, return empty DataFrame
+    if not process_args:
+        return pd.DataFrame()
+    
+    # Use ProcessPoolExecutor to run the backtests in parallel
+    results = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all jobs
+        if use_vectorized:
+            # Use vectorized backtest function
+            futures = [executor.submit(run_vectorized_single_backtest, *args) for args in process_args]
+        else:
+            # Use regular backtest function
+            futures = [executor.submit(run_backtest, *args) for args in process_args]
+        
+        # Collect results
+        for future in futures:
+            try:
+                result, _ = future.result()  # Ignore warnings/leverage info
+                if not result.empty:
+                    results.append(result)
+            except Exception as e:
+                # Handle any exceptions in individual processes
+                print(f"Warning: Process failed with error: {e}")
+                continue
+    
+    # Combine and return results
+    if results:
+        combined_results = pd.concat(results, ignore_index=True)
+        return combined_results.sort_values(by='Exit Date').reset_index(drop=True)
+    else:
+        return pd.DataFrame()
 def calculate_invested_value_over_time(trade_log_df_df):
     """
     Calculates the net invested value (total capital in active trades) over time.
@@ -1611,9 +1830,25 @@ if ohlcv_file and signals_file:
                 help="Only allow one active trade per instrument at a time. New signals for the same instrument will be ignored until the current trade exits."
             )
 
+            # Vectorization options for single backtest
+            st.sidebar.markdown("### ⚡ Performance Options")
+            use_vectorized = st.sidebar.checkbox("Enable Vectorized Processing", value=False,
+                                                 help="Use vectorized processing for faster backtesting")
+            
+            use_multiprocessing = False
+            max_workers = 1
+            if use_vectorized:
+                max_cores = mp.cpu_count()
+                use_multiprocessing = st.sidebar.checkbox("Use Multiprocessing", value=False)
+                
+                if use_multiprocessing:
+                    max_workers = st.sidebar.slider("Worker Processes", 1, max_cores,
+                                                   min(max_cores - 1, 4))
+                    st.sidebar.info(f"Will use {max_workers} of {max_cores} available cores")
+
             # Enhanced run button
             run_backtest_button = st.sidebar.button(
-                f"🚀 Run {signal_type.upper()} Backtest", 
+                f"🚀 Run {signal_type.upper()} Backtest",
                 type="primary",
                 help=f"Execute backtest with {signal_type} signals on selected instruments"
             )
@@ -1704,9 +1939,24 @@ if ohlcv_file and signals_file:
                                 st.warning(f"⚠️ These tickers have no OHLCV data: {no_data_tickers}")
                         
                         # Run the backtest with position sizing and signal type
-                        trade_log_df, _ = run_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
-                                               take_profit_pct, one_trade_per_instrument, initial_capital,
-                                               sizing_method, sizing_params, signal_type, allow_leverage)
+                        if use_vectorized:
+                            if use_multiprocessing:
+                                trade_log_df = run_multiprocessed_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
+                                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
+                                                                       sizing_method, sizing_params, signal_type, allow_leverage, max_workers, use_vectorized=True)
+                            else:
+                                trade_log_df, _ = run_vectorized_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
+                                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
+                                                                       sizing_method, sizing_params, signal_type, allow_leverage)
+                        else:
+                            if use_multiprocessing:
+                                trade_log_df = run_multiprocessed_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
+                                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
+                                                                       sizing_method, sizing_params, signal_type, allow_leverage, max_workers, use_vectorized=False)
+                            else:
+                                trade_log_df, _ = run_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
+                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
+                                                       sizing_method, sizing_params, signal_type, allow_leverage)
                     
                     # trade_log_df is already the DataFrame from run_backtest
                     trade_log_df_df = trade_log_df
