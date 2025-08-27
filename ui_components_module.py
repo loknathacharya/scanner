@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 import io
 from typing import List, Dict, Any, Optional
 import numpy as np
+from pandas.api.types import is_categorical_dtype
 
 class UIComponents:
     """Reusable UI components for the stock scanner app"""
@@ -39,7 +40,7 @@ class UIComponents:
                 st.metric(label=label, value=display_value)
     
     def create_filter_condition_row(self, index: int, condition: Dict[str, Any], 
-                                   available_columns: List[str]) -> Dict[str, Any]:
+                                   available_columns: List[str]) -> tuple[Dict[str, Any], bool]:
         """Create a row for filter condition input"""
         col1, col2, col3, col4, col5 = st.columns([2, 1, 2, 1, 1])
         
@@ -373,15 +374,11 @@ class UIComponents:
     def create_excel_download(self, df: pd.DataFrame) -> bytes:
         """Create Excel file for download"""
         output = io.BytesIO()
-        
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Scan Results', index=False)
-            
-            # Get workbook and worksheet
             workbook = writer.book
             worksheet = writer.sheets['Scan Results']
-            
-            # Add header formatting
+            # Ensure workbook is the xlsxwriter Workbook object
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
@@ -390,41 +387,40 @@ class UIComponents:
                 'font_color': 'white',
                 'border': 1
             })
-            
-            # Format headers
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
-            
-            # Auto-adjust column widths
             for i, col in enumerate(df.columns):
-                if df[col].dtype in ['object']:
+                col_dtype = df[col].dtype
+                if col_dtype in ['object']:
                     max_len = max(df[col].astype(str).str.len().max(), len(str(col))) + 2
+                elif is_categorical_dtype(col_dtype):
+                    # If categorical and ordered, use max; else, use string length
+                    if getattr(df[col].dtype, 'ordered', False):
+                        max_len = max(len(str(df[col].max())), len(str(col))) + 2
+                    else:
+                        max_len = max(df[col].astype(str).str.len().max(), len(str(col))) + 2
                 else:
                     max_len = max(len(str(df[col].max())), len(str(col))) + 2
-                
                 worksheet.set_column(i, i, min(max_len, 30))
-            
-            # Add conditional formatting for numeric columns
             numeric_cols = df.select_dtypes(include=[np.number]).columns
+            # Create formats only once
+            pos_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+            neg_format = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
             for col in numeric_cols:
                 col_index = df.columns.get_loc(col)
-                
-                # Green for positive, red for negative (if applicable)
                 if col in ['daily_return', 'return_5d', 'return_10d', 'return_20d']:
                     worksheet.conditional_format(1, col_index, len(df), col_index, {
                         'type': 'cell',
                         'criteria': '>',
                         'value': 0,
-                        'format': workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+                        'format': pos_format
                     })
-                    
                     worksheet.conditional_format(1, col_index, len(df), col_index, {
                         'type': 'cell',
                         'criteria': '<',
                         'value': 0,
-                        'format': workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+                        'format': neg_format
                     })
-        
         return output.getvalue()
     
     def create_summary_statistics_table(self, df: pd.DataFrame) -> None:
@@ -543,7 +539,7 @@ class UIComponents:
                 missing_df = pd.DataFrame({
                     'Column': missing_data.index,
                     'Missing Count': missing_data.values,
-                    'Missing %': missing_pct.values.round(2)
+                    'Missing %': missing_pct.round(2)
                 }).query('`Missing Count` > 0')
                 
                 if len(missing_df) > 0:
@@ -757,8 +753,8 @@ class ChartComponents:
             )
             
             # Add RSI reference lines
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red")
+            fig.add_hline(y=30, line_dash="dash", line_color="green")
         
         # MACD
         if all(col in data.columns for col in ['macd', 'macd_signal']):
@@ -821,8 +817,8 @@ class ChartComponents:
             )
             
             # Add stochastic reference lines
-            fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
-            fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
+            fig.add_hline(y=80, line_dash="dash", line_color="red")
+            fig.add_hline(y=20, line_dash="dash", line_color="green")
         
         # Update layout
         fig.update_layout(

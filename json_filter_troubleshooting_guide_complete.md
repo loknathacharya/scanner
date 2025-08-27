@@ -1579,4 +1579,4 @@ class RobustTechnicalIndicators:
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
             
-            self._log_indicator_
+            self._log_indicator_calculation(indicator_name, column_
