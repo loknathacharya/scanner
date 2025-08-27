@@ -207,6 +207,16 @@ def custom_filters(df):
     if 'filter_conditions' not in st.session_state:
         st.session_state.filter_conditions = []
     
+    # Ensure backward compatibility for existing conditions
+    for condition in st.session_state.filter_conditions:
+        if 'value_type' not in condition:
+            # Try to determine if value is a column name
+            available_cols = [col for col in df.columns if col not in ['symbol', 'date']]
+            if condition['value'] in available_cols:
+                condition['value_type'] = 'column'
+            else:
+                condition['value_type'] = 'value'
+    
     # Date range selection
     st.subheader("📅 Date Range Selection")
     col1, col2 = st.columns(2)
@@ -238,13 +248,14 @@ def custom_filters(df):
             'column': 'close',
             'operator': '>',
             'value': '0',
+            'value_type': 'value',
             'logic': 'AND'
         })
     
     # Display conditions
     conditions_to_remove = []
     for i, condition in enumerate(st.session_state.filter_conditions):
-        col1, col2, col3, col4, col5 = st.columns([2, 1, 2, 1, 1])
+        col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 1, 1, 1, 1])
         
         with col1:
             available_cols = [col for col in df.columns if col not in ['symbol', 'date']]
@@ -263,13 +274,37 @@ def custom_filters(df):
             )
         
         with col3:
-            condition['value'] = st.text_input(
-                "Value", value=condition['value'],
-                key=f"val_{i}",
-                help="Enter a number or another column name"
+            # Determine value type if not set
+            if 'value_type' not in condition:
+                # Try to determine if value is a column name
+                if condition['value'] in available_cols:
+                    condition['value_type'] = 'column'
+                else:
+                    condition['value_type'] = 'value'
+            
+            condition['value_type'] = st.selectbox(
+                "Type", ['value', 'column'],
+                key=f"val_type_{i}",
+                index=0 if condition['value_type'] == 'value' else 1
             )
         
         with col4:
+            if condition['value_type'] == 'column':
+                # Show column selector
+                condition['value'] = st.selectbox(
+                    "Compare With", available_cols,
+                    key=f"val_col_{i}",
+                    index=available_cols.index(condition['value']) if condition['value'] in available_cols else 0
+                )
+            else:
+                # Show value input
+                condition['value'] = st.text_input(
+                    "Value", value=condition['value'],
+                    key=f"val_{i}",
+                    help="Enter a number"
+                )
+        
+        with col5:
             if i > 0:
                 condition['logic'] = st.selectbox(
                     "Logic", ['AND', 'OR'],
@@ -277,7 +312,7 @@ def custom_filters(df):
                     index=['AND', 'OR'].index(condition['logic'])
                 )
         
-        with col5:
+        with col6:
             if st.button("🗑️", key=f"remove_{i}", help="Remove condition"):
                 conditions_to_remove.append(i)
     
@@ -292,7 +327,7 @@ def custom_filters(df):
         st.subheader("📝 Generated Filter")
         st.code(filter_string, language="python")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("🔍 Run Scan"):
                 try:
@@ -312,6 +347,12 @@ def custom_filters(df):
                     st.success(f"✅ Filter '{filter_name}' saved!")
                 else:
                     st.warning("Please enter a filter name.")
+        
+        with col3:
+            if st.button("🔄 Reset Filter"):
+                st.session_state.filter_conditions = []
+                st.success("✅ Filter reset successfully!")
+                st.rerun()
 
 def json_filter_tab(df):
     """JSON Filter interface with validation and preview"""
@@ -361,34 +402,34 @@ def json_filter_tab(df):
         # Show filter preview
         json_filter_ui.render_filter_preview(display_json, df)
         
-        # Apply filter button
-        if st.button("🔍 Apply JSON Filter", type="primary"):
-            try:
-                # Apply filter using advanced filter engine
-                with st.spinner("Applying JSON filter..."):
-                    filtered_data = advanced_filter_engine.apply_filter(df, display_json)
-                    
-                    # Apply date range filter if specified
-                    if date_range and 'date' in df.columns:
-                        start_date, end_date = date_range
-                        filtered_data = filtered_data[
-                            (filtered_data['date'] >= start_date) &
-                            (filtered_data['date'] <= end_date)
-                        ]
-                
-                # Store results in session state
-                st.session_state.scan_results = filtered_data
-                st.session_state.current_filter = display_json
-                st.session_state.date_range = date_range
-                st.success(f"✅ JSON filter applied! Found {len(filtered_data)} matches.")
-                
-            except Exception as e:
-                st.error(f"❌ Error applying JSON filter: {str(e)}")
-                st.error(f"Error details: {traceback.format_exc()}")
-        
-        # Save filter option
-        col1, col2 = st.columns(2)
+        # Action buttons
+        col1, col2, col3 = st.columns(3)
         with col1:
+            if st.button("🔍 Apply JSON Filter", type="primary"):
+                try:
+                    # Apply filter using advanced filter engine
+                    with st.spinner("Applying JSON filter..."):
+                        filtered_data = advanced_filter_engine.apply_filter(df, display_json)
+                        
+                        # Apply date range filter if specified
+                        if date_range and 'date' in df.columns:
+                            start_date, end_date = date_range
+                            filtered_data = filtered_data[
+                                (filtered_data['date'] >= start_date) &
+                                (filtered_data['date'] <= end_date)
+                            ]
+                    
+                    # Store results in session state
+                    st.session_state.scan_results = filtered_data
+                    st.session_state.current_filter = display_json
+                    st.session_state.date_range = date_range
+                    st.success(f"✅ JSON filter applied! Found {len(filtered_data)} matches.")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error applying JSON filter: {str(e)}")
+                    st.error(f"Error details: {traceback.format_exc()}")
+        
+        with col2:
             filter_name = st.text_input("Filter Name", placeholder="My JSON Filter",
                                        key="json_filter_name")
             if st.button("💾 Save JSON Filter"):
@@ -401,6 +442,16 @@ def json_filter_tab(df):
                     st.session_state.json_filter_name = ""
                 else:
                     st.warning("Please enter a filter name.")
+        
+        with col3:
+            if st.button("🔄 Reset JSON Filter"):
+                # Clear session state variables related to JSON filter
+                if 'last_validated_json' in st.session_state:
+                    del st.session_state.last_validated_json
+                if 'json_filter_input' in st.session_state:
+                    del st.session_state.json_filter_input
+                st.success("✅ JSON filter reset successfully!")
+                st.rerun()
 
 def results_tab():
     st.header("📋 Scan Results")

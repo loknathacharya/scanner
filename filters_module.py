@@ -29,13 +29,14 @@ class FilterEngine:
             column = condition['column']
             operator = condition['operator']
             value = condition['value']
+            value_type = condition.get('value_type', 'value')  # Default to 'value' for backward compatibility
             
             # Handle special operators
             if operator in ['crosses_above', 'crosses_below']:
                 filter_part = f"{column} {operator} {value}"
             else:
-                # Check if value is a column name or numeric
-                if value in ['open', 'high', 'low', 'close', 'volume'] or value.startswith(('sma_', 'ema_', 'rsi', 'macd', 'bb_')):
+                # Use explicit value_type if available
+                if value_type == 'column':
                     filter_part = f"{column} {operator} {value}"
                 else:
                     try:
@@ -44,6 +45,9 @@ class FilterEngine:
                         filter_part = f"{column} {operator} {float_val}"
                     except ValueError:
                         filter_part = f"{column} {operator} '{value}'"
+            
+            # Add parentheses to ensure proper operator precedence
+            filter_part = f"({filter_part})"
             
             if i > 0:
                 logic = condition.get('logic', 'AND')
@@ -89,6 +93,10 @@ class FilterEngine:
             try:
                 # Handle special operators first
                 processed_filter = self._process_special_operators(group, filter_string)
+                
+                # Convert logical operators to element-wise operators for numpy arrays
+                # We use spaces around the operators to avoid affecting column names
+                processed_filter = processed_filter.replace(" AND ", " & ").replace(" OR ", " | ")
                 
                 # Create evaluation environment
                 eval_env = self._create_eval_environment(group)
