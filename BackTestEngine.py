@@ -250,10 +250,10 @@ def prepare_vectorized_data(ohlcv_df: pd.DataFrame) -> Dict[str, np.ndarray]:
 
 def run_single_parameter_combo(args: Tuple) -> Dict:
     """
-    Run backtest for a single parameter combination - designed for multiprocessing
+    Run backtest for a single parameter combination - designed for single-threaded processing
     """
     (vectorized_data, signals_data, hp, sl, tp, signal_type,
-     initial_capital, sizing_method_code, sizing_params, one_trade_per_instrument, allow_leverage) = args
+     initial_capital, sizing_method, sizing_params, one_trade_per_instrument, allow_leverage) = args
     
     
     trades = []
@@ -264,7 +264,7 @@ def run_single_parameter_combo(args: Tuple) -> Dict:
     # Convert sizing method to code for numba
     method_map = {'equal_weight': 0, 'fixed_amount': 1, 'percent_risk': 2,
                   'volatility_target': 3, 'atr_based': 4, 'kelly_criterion': 5}
-    sizing_code = method_map.get(sizing_method_code, 0)
+    sizing_code = method_map.get(sizing_method, 0)
     
     
     # Process each signal
@@ -397,8 +397,12 @@ def run_single_parameter_combo(args: Tuple) -> Dict:
     # Risk-adjusted metrics
     profit_factor = abs(winners['P&L ($)'].sum() / losers['P&L ($)'].sum()) if not losers.empty and losers['P&L ($)'].sum() != 0 else np.inf
     
-    # Portfolio value progression
-    total_return = (total_pl / initial_capital) * 100
+    # Portfolio value progression - use final portfolio value for accurate return calculation
+    final_portfolio_value = portfolio_value if trades else initial_capital
+    total_return = ((final_portfolio_value - initial_capital) / initial_capital) * 100
+    
+    # DEBUG: Log vectorized return calculation
+    print(f"DEBUG run_single_parameter_combo: Final portfolio value = ${final_portfolio_value:.2f}, Total return = {total_return:.2f}%")
     
     # Drawdown calculation using portfolio values
     cumulative_pl = trades_df['P&L ($)'].cumsum()
@@ -462,7 +466,7 @@ def run_vectorized_parameter_optimization(ohlcv_df, signals_df, holding_periods,
     
     total_combinations = len(param_combinations)
     
-    # Prepare arguments for parallel processing
+    # Prepare arguments for sequential processing
     args_list = []
     for hp, sl, tp in param_combinations:
         args = (vectorized_data, signals_df, hp, sl, tp, signal_type,
@@ -527,7 +531,7 @@ def run_vectorized_parameter_optimization(ohlcv_df, signals_df, holding_periods,
         st.error("No valid results from vectorized optimization.")
         return pd.DataFrame()
 
-def run_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profit_pct=None, 
+def run_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profit_pct=None,
                 one_trade_per_instrument=False, initial_capital=100000, sizing_method='equal_weight',
                 sizing_params=None, signal_type='long', allow_leverage=False):
     """Enhanced backtest function with position sizing, long/short support and leverage control"""
@@ -540,6 +544,9 @@ def run_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profi
     portfolio_value = initial_capital
     open_positions_value = 0  # Track total value of open positions
     leverage_warnings = []  # Track leverage warnings
+    
+    # DEBUG: Log initial state
+    print(f"DEBUG run_backtest: Initial capital={initial_capital}, signal_type={signal_type}, allow_leverage={allow_leverage}")
     
     # Sort signals by date to process chronologically
     signals_df_sorted = signals_df.sort_values('Date').reset_index(drop=True)
@@ -609,16 +616,23 @@ def run_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profi
                 open_positions_value=open_positions_value
             )
             
+            # DEBUG: Log position sizing
+            print(f"DEBUG run_backtest: Ticker={ticker}, Entry Price={entry_price:.2f}, Shares={shares:.0f}, Portfolio Value={portfolio_value:.2f}, Open Positions Value={open_positions_value:.2f}")
+            
             position_value = shares * entry_price
             
+            # DEBUG: Log position value calculation
+            print(f"DEBUG run_backtest: Position Value={position_value:.2f}, Available Capital={portfolio_value - open_positions_value:.2f}")
             
             # For no leverage mode, check if we have enough capital
             if not allow_leverage and open_positions_value + position_value > portfolio_value:
                 leverage_warnings.append(f"Skipped {ticker} on {entry_date}: would require leverage")
+                print(f"DEBUG run_backtest: SKIPPED - Would require leverage. Total needed: {open_positions_value + position_value:.2f} > Available: {portfolio_value:.2f}")
                 continue  # Skip this trade as it would require leverage
             
             # Update open positions value
             open_positions_value += position_value
+            print(f"DEBUG run_backtest: Updated open positions value to {open_positions_value:.2f}")
             
             # Adjust stop loss and take profit for short positions
             if signal_type == 'long':
@@ -691,6 +705,9 @@ def run_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profi
                 # Update open positions value when trade exits
                 open_positions_value -= position_value
                 
+                # DEBUG: Log trade execution
+                print(f"DEBUG run_backtest: Trade executed - P&L={pl_dollar:.2f}, New Portfolio Value={portfolio_value:.2f}, New Open Positions Value={open_positions_value:.2f}")
+                
 
                 trades.append({
                     'Ticker': ticker,
@@ -736,6 +753,9 @@ def run_vectorized_single_backtest(ohlcv_df, signals_df, holding_period, stop_lo
     active_trades = {}
     open_positions_value = 0.0
     
+    # DEBUG: Log initial state
+    print(f"DEBUG run_vectorized_single_backtest: Initial capital={initial_capital}, signal_type={signal_type}, allow_leverage={allow_leverage}")
+    
     # Prepare vectorized data
     st.info("Preparing data for vectorized processing...")
     vectorized_data = prepare_vectorized_data(ohlcv_df)
@@ -774,14 +794,45 @@ def run_vectorized_single_backtest(ohlcv_df, signals_df, holding_period, stop_lo
             
         entry_price = ticker_prices[entry_idx, 3]
         
-        # Calculate position size (pass user Kelly parameters if available)
+        # Calculate position size with actual volatility and ATR (like regular backtest)
         kelly_win_rate = sizing_params.get('kelly_win_rate', 55)
         kelly_avg_win = sizing_params.get('kelly_avg_win', 8)
         kelly_avg_loss = sizing_params.get('kelly_avg_loss', -4)
         
+        # Calculate actual volatility and ATR for consistency with regular backtest
+        volatility = 0.20  # Default
+        atr = entry_price * 0.02  # Default
+        
+        if sizing_method == 'volatility_target':
+            # Calculate volatility using recent price data
+            # Get data up to current entry point
+            recent_indices = ticker_prices[:entry_idx+1, 0]  # All dates up to entry
+            if len(recent_indices) > 0:
+                # Convert back to datetime for volatility calculation
+                recent_dates = [pd.Timestamp.fromordinal(int(d)) for d in recent_indices]
+                recent_prices = ticker_prices[:entry_idx+1, 3]  # Close prices
+                if len(recent_prices) >= 60:  # Need enough data for volatility calculation
+                    recent_volatility_data = pd.Series(recent_prices)
+                    volatility = calculate_volatility(recent_volatility_data.tail(60))
+        
+        elif sizing_method == 'atr_based':
+            # Calculate ATR using recent OHLC data
+            if entry_idx >= 14:  # Need enough data for ATR calculation
+                recent_high = ticker_prices[max(0, entry_idx-29):entry_idx+1, 1]  # High prices
+                recent_low = ticker_prices[max(0, entry_idx-29):entry_idx+1, 2]   # Low prices
+                recent_close = ticker_prices[max(0, entry_idx-29):entry_idx+1, 3] # Close prices
+                
+                # Create DataFrame for ATR calculation
+                atr_data = pd.DataFrame({
+                    'High': recent_high,
+                    'Low': recent_low,
+                    'Close': recent_close
+                })
+                atr = calculate_atr(atr_data['High'], atr_data['Low'], atr_data['Close'])
+        
         shares = calculate_position_size_vectorized(
             sizing_code, entry_price, portfolio_value,
-            0.20, entry_price * 0.02, sizing_params.get('risk_per_trade', 2.0),
+            volatility, atr, sizing_params.get('risk_per_trade', 2.0),
             sizing_params.get('fixed_amount', 10000),
             sizing_params.get('volatility_target', 0.15),
             0.05,  # Default stop loss assumption for percent risk calculation
@@ -790,14 +841,22 @@ def run_vectorized_single_backtest(ohlcv_df, signals_df, holding_period, stop_lo
             open_positions_value # Pass open_positions_value
         )
         
+        # DEBUG: Log position sizing
+        print(f"DEBUG run_vectorized_single_backtest: Ticker={ticker}, Entry Price={entry_price:.2f}, Shares={shares:.0f}, Portfolio Value={portfolio_value:.2f}, Open Positions Value={open_positions_value:.2f}")
+        
         position_value = shares * entry_price
+        
+        # DEBUG: Log position value calculation
+        print(f"DEBUG run_vectorized_single_backtest: Position Value={position_value:.2f}, Available Capital={portfolio_value - open_positions_value:.2f}")
         
         # For no leverage mode, check if we have enough capital
         if not allow_leverage and open_positions_value + position_value > portfolio_value:
+            print(f"DEBUG run_vectorized_single_backtest: SKIPPED - Would require leverage. Total needed: {open_positions_value + position_value:.2f} > Available: {portfolio_value:.2f}")
             continue # Skip this trade as it would require leverage
 
         # Update open positions value
         open_positions_value += position_value
+        print(f"DEBUG run_vectorized_single_backtest: Updated open positions value to {open_positions_value:.2f}")
 
         
         # Calculate trade outcome
@@ -818,6 +877,9 @@ def run_vectorized_single_backtest(ohlcv_df, signals_df, holding_period, stop_lo
             
             # Update open positions value when trade exits
             open_positions_value -= position_value
+            
+            # DEBUG: Log trade execution
+            print(f"DEBUG run_vectorized_single_backtest: Trade executed - P&L={pl_dollar:.2f}, New Portfolio Value={portfolio_value:.2f}, New Open Positions Value={open_positions_value:.2f}")
 
             # Convert ordinal dates back to datetime for consistency with original format
             entry_date = pd.Timestamp.fromordinal(int(ticker_prices[entry_idx, 0]))
@@ -850,96 +912,6 @@ def run_vectorized_single_backtest(ohlcv_df, signals_df, holding_period, stop_lo
     if not trades:
         return pd.DataFrame(), []
     return pd.DataFrame(trades).sort_values(by='Exit Date').reset_index(drop=True), []
-def run_multiprocessed_single_backtest(ohlcv_df, signals_df, holding_period, stop_loss_pct, take_profit_pct=None, 
-                                     one_trade_per_instrument=False, initial_capital=100000, sizing_method='equal_weight',
-                                     sizing_params=None, signal_type='long', allow_leverage=False, max_workers=None, 
-                                     use_vectorized=False):
-    """
-    Run single backtest with multiprocessing support by processing each instrument in parallel.
-    
-    Parameters:
-    - ohlcv_df: DataFrame with OHLCV data
-    - signals_df: DataFrame with trading signals
-    - holding_period: int, number of days to hold positions
-    - stop_loss_pct: float, stop loss percentage
-    - take_profit_pct: float or None, take profit percentage
-    - one_trade_per_instrument: bool, whether to allow only one trade per instrument at a time
-    - initial_capital: float, initial portfolio capital
-    - sizing_method: str, position sizing method
-    - sizing_params: dict, parameters for position sizing
-    - signal_type: str, 'long' or 'short'
-    - allow_leverage: bool, whether to allow leverage
-    - max_workers: int or None, maximum number of worker processes
-    - use_vectorized: bool, whether to use vectorized backtesting
-    
-    Returns:
-    - DataFrame with trade results, sorted by exit date
-    """
-    # Handle the case where max_workers is None by setting it to a reasonable default
-    if max_workers is None:
-        max_workers = min(mp.cpu_count() - 1, 8)  # Leave one core free, cap at 8
-    
-    # Group signals by instrument
-    instrument_groups = signals_df.groupby('Ticker')
-    
-    # Create arguments for each process
-    process_args = []
-    for ticker, ticker_signals in instrument_groups:
-        # Filter OHLCV data for this ticker
-        ticker_ohlcv = ohlcv_df[ohlcv_df['Ticker'] == ticker]
-        
-        # Skip if no OHLCV data for this ticker
-        if ticker_ohlcv.empty:
-            continue
-            
-        # Prepare arguments for this process
-        args = (
-            ticker_ohlcv,
-            ticker_signals,
-            holding_period,
-            stop_loss_pct,
-            take_profit_pct,
-            one_trade_per_instrument,
-            initial_capital,
-            sizing_method,
-            sizing_params,
-            signal_type,
-            allow_leverage
-        )
-        process_args.append(args)
-    
-    # If no valid instruments, return empty DataFrame
-    if not process_args:
-        return pd.DataFrame()
-    
-    # Use ProcessPoolExecutor to run the backtests in parallel
-    results = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all jobs
-        if use_vectorized:
-            # Use vectorized backtest function
-            futures = [executor.submit(run_vectorized_single_backtest, *args) for args in process_args]
-        else:
-            # Use regular backtest function
-            futures = [executor.submit(run_backtest, *args) for args in process_args]
-        
-        # Collect results
-        for future in futures:
-            try:
-                result, _ = future.result()  # Ignore warnings/leverage info
-                if not result.empty:
-                    results.append(result)
-            except Exception as e:
-                # Handle any exceptions in individual processes
-                print(f"Warning: Process failed with error: {e}")
-                continue
-    
-    # Combine and return results
-    if results:
-        combined_results = pd.concat(results, ignore_index=True)
-        return combined_results.sort_values(by='Exit Date').reset_index(drop=True)
-    else:
-        return pd.DataFrame()
 def calculate_invested_value_over_time(trade_log_df_df):
     """
     Calculates the net invested value (total capital in active trades) over time.
@@ -1070,6 +1042,11 @@ def calculate_performance_metrics(trade_log_df, initial_capital=100000, risk_fre
     if trade_log_df.empty:
         return {}
     
+    # DEBUG: Log performance metrics calculation
+    print(f"DEBUG calculate_performance_metrics: Processing {len(trade_log_df)} trades, initial_capital={initial_capital}")
+    if not trade_log_df.empty:
+        print(f"DEBUG calculate_performance_metrics: Sample portfolio values - min: {trade_log_df['Portfolio Value'].min():.2f}, max: {trade_log_df['Portfolio Value'].max():.2f}")
+    
     total_trades = len(trade_log_df)
     winners = trade_log_df[trade_log_df['Profit/Loss (%)'] > 0]
     losers = trade_log_df[trade_log_df['Profit/Loss (%)'] <= 0]
@@ -1086,6 +1063,18 @@ def calculate_performance_metrics(trade_log_df, initial_capital=100000, risk_fre
     
     # Risk-adjusted metrics
     profit_factor = abs(winners['P&L ($)'].sum() / losers['P&L ($)'].sum()) if not losers.empty and losers['P&L ($)'].sum() != 0 else np.inf
+    
+    # DEBUG: Log return calculation methods
+    print(f"DEBUG calculate_performance_metrics: Total P&L = ${total_pl_dollar:.2f}")
+    
+    # Portfolio value progression
+    if 'Portfolio Value' in trade_log_df.columns:
+        final_value = trade_log_df['Portfolio Value'].iloc[-1]
+        total_return = (final_value / initial_capital - 1) * 100
+        print(f"DEBUG calculate_performance_metrics: Using portfolio value method - Final: ${final_value:.2f}, Return: {total_return:.2f}%")
+    else:
+        total_return = (total_pl_dollar / initial_capital) * 100
+        print(f"DEBUG calculate_performance_metrics: Using P&L method - Total P&L: ${total_pl_dollar:.2f}, Return: {total_return:.2f}%")
     
     # Portfolio value progression
     if 'Portfolio Value' in trade_log_df.columns:
@@ -1839,12 +1828,7 @@ if ohlcv_file and signals_file:
             max_workers = 1
             if use_vectorized:
                 max_cores = mp.cpu_count()
-                use_multiprocessing = st.sidebar.checkbox("Use Multiprocessing", value=False)
-                
-                if use_multiprocessing:
-                    max_workers = st.sidebar.slider("Worker Processes", 1, max_cores,
-                                                   min(max_cores - 1, 4))
-                    st.sidebar.info(f"Will use {max_workers} of {max_cores} available cores")
+
 
             # Enhanced run button
             run_backtest_button = st.sidebar.button(
@@ -1940,23 +1924,13 @@ if ohlcv_file and signals_file:
                         
                         # Run the backtest with position sizing and signal type
                         if use_vectorized:
-                            if use_multiprocessing:
-                                trade_log_df = run_multiprocessed_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
-                                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
-                                                                       sizing_method, sizing_params, signal_type, allow_leverage, max_workers, use_vectorized=True)
-                            else:
-                                trade_log_df, _ = run_vectorized_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
-                                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
-                                                                       sizing_method, sizing_params, signal_type, allow_leverage)
+                            trade_log_df, _ = run_vectorized_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
+                                                                   take_profit_pct, one_trade_per_instrument, initial_capital,
+                                                                   sizing_method, sizing_params, signal_type, allow_leverage)
                         else:
-                            if use_multiprocessing:
-                                trade_log_df = run_multiprocessed_single_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
-                                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
-                                                                       sizing_method, sizing_params, signal_type, allow_leverage, max_workers, use_vectorized=False)
-                            else:
-                                trade_log_df, _ = run_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
-                                                       take_profit_pct, one_trade_per_instrument, initial_capital,
-                                                       sizing_method, sizing_params, signal_type, allow_leverage)
+                            trade_log_df, _ = run_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
+                                                   take_profit_pct, one_trade_per_instrument, initial_capital,
+                                                   sizing_method, sizing_params, signal_type, allow_leverage)
                     
                     # trade_log_df is already the DataFrame from run_backtest
                     trade_log_df_df = trade_log_df
@@ -2905,14 +2879,10 @@ if ohlcv_file and signals_file:
             
             if use_vectorized:
                 max_cores = mp.cpu_count()
-                use_multiprocessing = st.sidebar.checkbox("Use Multiprocessing", value=True)
-                
-                if use_multiprocessing:
-                    max_workers = st.sidebar.slider("Worker Processes", 1, max_cores,
-                                                   min(max_cores - 1, 4))
-                    st.sidebar.info(f"Will use {max_workers} of {max_cores} available cores")
-                else:
-                    max_workers = 1
+                use_multiprocessing = st.sidebar.checkbox("Use Multiprocessing for Parameter Optimization", value=True)
+                max_workers = st.sidebar.slider("Worker Processes", 1, max_cores,
+                                               min(max_cores - 1, 4))
+                st.sidebar.info(f"Will use {max_workers} of {max_cores} available cores for parameter optimization")
             else:
                 use_multiprocessing = False
                 max_workers = 1
