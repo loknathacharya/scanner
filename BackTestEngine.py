@@ -1184,9 +1184,16 @@ def run_parameter_optimization(ohlcv_df, signals_df, holding_periods, stop_losse
     
     for params in param_combinations:
         if take_profits is not None and len(take_profits) > 0:
-            hp, sl, tp = params
+            if len(params) == 3:
+                hp, sl, tp = params
+            else:
+                hp, sl = params
+                tp = None
         else:
-            hp, sl = params
+            if len(params) == 2:
+                hp, sl = params
+            else:
+                hp, sl, tp = params
             tp = None
         
         combination_count += 1
@@ -1914,13 +1921,7 @@ if ohlcv_file and signals_file:
                                     'Has_OHLCV_Data': len(ohlcv_for_ticker) > 0
                                 })
                             
-                            debug_table = pd.DataFrame(debug_results)
-                            st.dataframe(debug_table, use_container_width=True)
-                            
-                            # Show tickers with no OHLCV data
-                            no_data_tickers = debug_table[debug_table['Has_OHLCV_Data'] == False]['Ticker'].tolist()
-                            if no_data_tickers:
-                                st.warning(f"⚠️ These tickers have no OHLCV data: {no_data_tickers}")
+                            st.dataframe(pd.DataFrame(debug_results), use_container_width=True)
                         
                         # Run the backtest with position sizing and signal type
                         if use_vectorized:
@@ -1931,887 +1932,32 @@ if ohlcv_file and signals_file:
                             trade_log_df, _ = run_backtest(ohlcv_df, filtered_signals, holding_period, stop_loss_pct,
                                                    take_profit_pct, one_trade_per_instrument, initial_capital,
                                                    sizing_method, sizing_params, signal_type, allow_leverage)
-                    
-                    # trade_log_df is already the DataFrame from run_backtest
-                    trade_log_df_df = trade_log_df
-                    if not trade_log_df_df.empty:
-                        performance_metrics = calculate_performance_metrics(trade_log_df_df, initial_capital)
                         
-                        # Enhanced results display
-                        st.markdown("## 📊 Backtest Results")
-                        st.markdown(f"""
-                        <div style="background: linear-gradient(90deg, #28a745, #20c997); padding: 1rem; border-radius: 10px; color: white; text-align: center; margin-bottom: 2rem;">
-                            <h3>✅ Backtest Completed Successfully!</h3>
-                            <p>Analyzed <strong>{performance_metrics.get('Total Trades', 0)}</strong> {signal_type.upper()} trades across <strong>{trade_log_df_df['Ticker'].nunique()}</strong> instruments</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Enhanced KPI display with signal type info
-                        st.markdown("### 🎯 Key Performance Indicators")
-                        
-                        kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
-                        with kpi_col1:
-                            st.metric("Total Return", f"{performance_metrics.get('Total Return (%)', 0):.2f}%", 
-                                     help=f"Total portfolio return from {signal_type} signals")
-                            st.metric("Total P&L", f"${performance_metrics.get('Total P&L ($)', 0):,.0f}")
-                        with kpi_col2:
-                            st.metric("Win Rate", f"{performance_metrics.get('Win Rate (%)', 0):.2f}%")
-                            st.metric("Profit Factor", f"{performance_metrics.get('Profit Factor', 0):.2f}")
-                        with kpi_col3:
-                            st.metric("Max Drawdown", f"{performance_metrics.get('Max Drawdown (%)', 0):.2f}%")
-                            st.metric("Sharpe Ratio", f"{performance_metrics.get('Sharpe Ratio', 0):.3f}")
-                        with kpi_col4:
-                            st.metric("Total Trades", f"{performance_metrics.get('Total Trades', 0)}")
-                            st.metric("Avg Win", f"{performance_metrics.get('Average Win (%)', 0):.2f}%")
-                        with kpi_col5:
-                            st.metric("Avg Position", f"${performance_metrics.get('Average Position Size ($)', 0):,.0f}")
-                            st.metric("Max Position", f"${performance_metrics.get('Max Position Size ($)', 0):,.0f}")
+                        # Store backtest results in session state to prevent recalculation on filter changes
+                        st.write("DEBUG: trade_log_df shape:", trade_log_df.shape)
+                        if not trade_log_df.empty:
+                            st.session_state['backtest_results'] = trade_log_df
+                            st.session_state['backtest_params'] = {
+                                'holding_period': holding_period,
+                                'stop_loss_pct': stop_loss_pct,
+                                'take_profit_pct': take_profit_pct,
+                                'one_trade_per_instrument': one_trade_per_instrument,
+                                'initial_capital': initial_capital,
+                                'sizing_method': sizing_method,
+                                'sizing_params': sizing_params,
+                                'signal_type': signal_type,
+                                'allow_leverage': allow_leverage
+                            }
+                            st.success("✅ Backtest results cached in session state")
+                            st.write("DEBUG: backtest_results in session_state:", 'backtest_results' in st.session_state)
+                        else:
+                            # Clear session state if no results
+                            if 'backtest_results' in st.session_state:
+                                del st.session_state['backtest_results']
+                            if 'backtest_params' in st.session_state:
+                                del st.session_state['backtest_params']
+                            st.warning("⚠️ No trades were executed for the selected parameters.")
 
-                        # Signal breakdown if available
-                        signal_breakdown = performance_metrics.get('Signal Breakdown', {})
-                        if signal_breakdown:
-                            st.markdown("### 📈 Signal Type Breakdown")
-                            breakdown_cols = st.columns(len(signal_breakdown))
-                            for i, (sig_type, count) in enumerate(signal_breakdown.items()):
-                                with breakdown_cols[i]:
-                                    badge_class = 'long-badge' if 'Long' in sig_type else 'short-badge'
-                                    st.markdown(f"""
-                                    <div class="metric-card" style="text-align: center;">
-                                        <span class="signal-badge {badge_class}">{sig_type}</span><br>
-                                        <strong>{count} trades</strong>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-
-                        # Enhanced tabs for detailed analysis
-                        tab1, tab_invested, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-                            "📈 Equity Curve",
-                            "📊 Invested Capital",
-                            "📋 Trade Log",
-                            "🏢 Per-Instrument",
-                            "📊 Trade Analysis",
-                            "📏 Position Sizing",
-                            "🎲 Monte Carlo",
-                            "⚖️ Leverage Metrics"
-                        ])
-                        
-                        with tab1:
-                            st.markdown("### Portfolio Performance Over Time")
-                            equity_curve = performance_metrics.get("Equity Curve")
-                            if equity_curve is not None:
-                                fig = px.line(equity_curve, x=equity_curve.index, y='Portfolio Value', 
-                                            title=f"Portfolio Value Over Time ({signal_type.upper()} Signals)",
-                                            labels={'Portfolio Value': 'Portfolio Value ($)', 'Exit Date': 'Date'})
-                                # Add starting capital line
-                                fig.add_hline(y=initial_capital, line_dash="dash", 
-                                            annotation_text=f"Starting Capital: ${initial_capital:,}")
-                                fig.update_layout(hovermode='x', height=500)
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Add performance summary
-                                final_value = equity_curve['Portfolio Value'].iloc[-1]
-                                total_return = ((final_value / initial_capital) - 1) * 100
-                                st.info(f"📊 Final Portfolio Value: ${final_value:,.0f} | Total Return: {total_return:.2f}%")
-
-                        with tab_invested:
-                            st.markdown("### Net Invested Value Over Time")
-                            # AI-CHANGE: Call the new function to calculate invested value over time
-                            invested_value_df = calculate_invested_value_over_time(trade_log_df_df)
-                                
-                            if not invested_value_df.empty:
-                                    fig = px.line(invested_value_df, x='Date', y='Invested Value',
-                                                title="Net Invested Value Over Time",
-                                                labels={'Invested Value': 'Invested Value ($)', 'Date': 'Date'})
-                                    fig.update_layout(hovermode='x', height=500)
-                                    st.plotly_chart(fig, use_container_width=True)
-                                    st.markdown("#### Invested Value Data")
-                                    st.dataframe(invested_value_df.style.format({'Invested Value': '${:,.0f}'}), use_container_width=True)
-                            else:
-                                    st.info("No invested value data to display (no trades executed or data issues).")
-                        
-                        # Enhanced trade log filtering section with robust error handling
-
-                        with tab2:
-                            st.markdown("### Detailed Trade Log")
-                            
-                            try:
-                                # Format columns for display
-                                display_columns = ['Ticker', 'Signal Type', 'Entry Date', 'Entry Price', 'Exit Date', 'Exit Price',
-                                                 'Shares', 'Position Value', 'P&L ($)', 'Profit/Loss (%)',
-                                                 'Exit Reason', 'Days Held']
-                                
-                                if all(col in trade_log_df.columns for col in display_columns):
-                                    # Initialize session state for filters with safe defaults
-                                    if 'ticker_filter' not in st.session_state:
-                                        st.session_state.ticker_filter = 'All'
-                                    if 'outcome_filter' not in st.session_state:
-                                        st.session_state.outcome_filter = 'All'
-                                    if 'exit_reason_filter' not in st.session_state:
-                                        st.session_state.exit_reason_filter = 'All'
-                                    
-                                    # Always start with the complete trade log as the base
-                                    display_df = trade_log_df[display_columns].copy()
-                                    
-                                    # Add filtering options for trade log with comprehensive error handling
-                                    st.markdown("#### 🔍 Filter Options")
-                                    filter_col1, filter_col2, filter_col3 = st.columns(3)
-                                    
-                                    with filter_col1:
-                                        # Ticker filter - with "All" option and safe handling
-                                        try:
-                                            all_tickers = sorted(display_df['Ticker'].unique()) if len(display_df) > 0 else []
-                                            ticker_filter_options = ['All'] + all_tickers
-                                            
-                                            # Ensure session state value is in options, if not reset to 'All'
-                                            if st.session_state.ticker_filter not in ticker_filter_options:
-                                                st.session_state.ticker_filter = 'All'
-                                            
-                                            # Safe index lookup with multiple fallbacks
-                                            try:
-                                                ticker_index = ticker_filter_options.index(st.session_state.ticker_filter)
-                                            except (ValueError, AttributeError):
-                                                ticker_index = 0
-                                            
-                                            ticker_filter_selection = st.selectbox(
-                                                "Filter by Ticker:",
-                                                options=ticker_filter_options,
-                                                index=ticker_index,
-                                                key="ticker_filter"
-                                            )
-                                        except Exception as e:
-                                            st.error(f"Error in ticker filter: {e}")
-                                            ticker_filter_selection = 'All'
-                                    
-                                    with filter_col2:
-                                        # Outcome filter with safe handling
-                                        try:
-                                            outcome_filter_options = ['All', 'Winners', 'Losers']
-                                            
-                                            # Ensure session state value is valid
-                                            if st.session_state.outcome_filter not in outcome_filter_options:
-                                                st.session_state.outcome_filter = 'All'
-                                            
-                                            # Safe index lookup
-                                            try:
-                                                outcome_index = outcome_filter_options.index(st.session_state.outcome_filter)
-                                            except (ValueError, AttributeError):
-                                                outcome_index = 0
-                                            
-                                            outcome_filter = st.selectbox(
-                                                "Filter by Outcome:",
-                                                options=outcome_filter_options,
-                                                index=outcome_index,
-                                                key="outcome_filter"
-                                            )
-                                        except Exception as e:
-                                            st.error(f"Error in outcome filter: {e}")
-                                            outcome_filter = 'All'
-                                    
-                                    with filter_col3:
-                                        # Exit reason filter - with "All" option and safe handling
-                                        try:
-                                            all_exit_reasons = sorted(display_df['Exit Reason'].unique()) if len(display_df) > 0 and 'Exit Reason' in display_df.columns else []
-                                            exit_reason_options = ['All'] + all_exit_reasons
-                                            
-                                            # Ensure session state value is in options, if not reset to 'All'
-                                            if st.session_state.exit_reason_filter not in exit_reason_options:
-                                                st.session_state.exit_reason_filter = 'All'
-                                            
-                                            # Safe index lookup
-                                            try:
-                                                exit_reason_index = exit_reason_options.index(st.session_state.exit_reason_filter)
-                                            except (ValueError, AttributeError):
-                                                exit_reason_index = 0
-                                            
-                                            exit_reason_selection = st.selectbox(
-                                                "Filter by Exit Reason:",
-                                                options=exit_reason_options,
-                                                index=exit_reason_index,
-                                                key="exit_reason_filter"
-                                            )
-                                        except Exception as e:
-                                            st.error(f"Error in exit reason filter: {e}")
-                                            exit_reason_selection = 'All'
-                                    
-                                    # Apply filters with comprehensive error handling
-                                    filtered_df = display_df.copy()
-                                    
-                                    try:
-                                        # Ensure we're working with a proper DataFrame
-                                        if not isinstance(filtered_df, pd.DataFrame):
-                                            filtered_df = display_df.copy()
-                                        
-                                        # Apply ticker filter - with safe string handling
-                                        if ticker_filter_selection != 'All' and len(filtered_df) > 0:
-                                            try:
-                                                # Ensure Ticker column exists and handle string comparisons safely
-                                                if 'Ticker' in filtered_df.columns:
-                                                    # Handle potential NaN values in Ticker column
-                                                    mask = filtered_df['Ticker'].astype(str) == str(ticker_filter_selection)
-                                                    filtered_df = filtered_df[mask].copy()
-                                            except Exception as e:
-                                                st.error(f"Error applying ticker filter: {e}")
-                                        
-                                        # Apply outcome filter - with safe numeric handling
-                                        if outcome_filter != 'All' and len(filtered_df) > 0:
-                                            try:
-                                                if 'Profit/Loss (%)' in filtered_df.columns:
-                                                    # Ensure Profit/Loss (%) is numeric
-                                                    filtered_df['Profit/Loss (%)'] = pd.to_numeric(filtered_df['Profit/Loss (%)'], errors='coerce')
-                                                    
-                                                    if outcome_filter == 'Winners':
-                                                        mask = filtered_df['Profit/Loss (%)'] > 0
-                                                    elif outcome_filter == 'Losers':
-                                                        mask = filtered_df['Profit/Loss (%)'] <= 0
-                                                    else:
-                                                        mask = pd.Series([True] * len(filtered_df))
-                                                    
-                                                    filtered_df = filtered_df[mask].copy()
-                                            except Exception as e:
-                                                st.error(f"Error applying outcome filter: {e}")
-                                        
-                                        # Apply exit reason filter - with safe string handling
-                                        if exit_reason_selection != 'All' and len(filtered_df) > 0:
-                                            try:
-                                                if 'Exit Reason' in filtered_df.columns:
-                                                    # Handle potential NaN values in Exit Reason column
-                                                    mask = filtered_df['Exit Reason'].astype(str) == str(exit_reason_selection)
-                                                    filtered_df = filtered_df[mask].copy()
-                                            except Exception as e:
-                                                st.error(f"Error applying exit reason filter: {e}")
-                                                
-                                    except Exception as e:
-                                        st.error(f"Error applying filters: {e}")
-                                        filtered_df = display_df.copy()  # Fallback to unfiltered data
-                                    
-                                    # Show filter results summary
-                                    filter_summary_col1, filter_summary_col2, filter_summary_col3 = st.columns(3)
-                                    with filter_summary_col1:
-                                        st.metric("Showing Trades", f"{len(filtered_df):,}")
-                                    with filter_summary_col2:
-                                        st.metric("Total Trades", f"{len(display_df):,}")
-                                    with filter_summary_col3:
-                                        if len(filtered_df) > 0:
-                                            try:
-                                                filtered_return = filtered_df['Profit/Loss (%)'].mean()
-                                                st.metric("Avg Return", f"{filtered_return:.2f}%")
-                                            except:
-                                                st.metric("Avg Return", "N/A")
-                                        else:
-                                            st.metric("Avg Return", "N/A")
-                                    
-                                    # Additional quick filters as checkboxes with error handling
-                                    st.markdown("#### ⚡ Quick Filters")
-                                    quick_filter_col1, quick_filter_col2, quick_filter_col3, quick_filter_col4 = st.columns(4)
-                                    
-                                    with quick_filter_col1:
-                                        show_only_profitable = st.checkbox("💚 Only Profitable", key="profitable_filter")
-                                    with quick_filter_col2:
-                                        show_only_stop_loss = st.checkbox("🛑 Only Stop Loss", key="stop_loss_filter")
-                                    with quick_filter_col3:
-                                        show_only_take_profit = st.checkbox("🎯 Only Take Profit", key="take_profit_filter")
-                                    with quick_filter_col4:
-                                        show_large_positions = st.checkbox("💰 Large Positions (>avg)", key="large_pos_filter")
-                                    
-                                    # Apply quick filters with error handling
-                                    try:
-                                        if show_only_profitable:
-                                            filtered_df = filtered_df[filtered_df['Profit/Loss (%)'] > 0]
-                                        
-                                        if show_only_stop_loss:
-                                            filtered_df = filtered_df[filtered_df['Exit Reason'] == 'Stop Loss']
-                                        
-                                        if show_only_take_profit:
-                                            filtered_df = filtered_df[filtered_df['Exit Reason'] == 'Take Profit']
-                                        
-                                        if show_large_positions and len(display_df) > 0:
-                                            avg_position = display_df['Position Value'].mean()
-                                            filtered_df = filtered_df[filtered_df['Position Value'] > avg_position]
-                                    except Exception as e:
-                                        st.error(f"Error applying quick filters: {e}")
-                                    
-                                    # Reset filters button
-                                    if st.button("🔄 Reset All Filters", key="reset_filters"):
-                                        try:
-                                            st.session_state.ticker_filter = 'All'
-                                            st.session_state.outcome_filter = 'All'
-                                            st.session_state.exit_reason_filter = 'All'
-                                            st.rerun()
-                                        except Exception as e:
-                                            st.error(f"Error resetting filters: {e}")
-                                    
-                                    # Show updated results
-                                    if len(filtered_df) == 0:
-                                        st.warning("⚠️ No trades match the selected filters. Try adjusting your filter criteria.")
-                                    else:
-                                        st.success(f"✅ Showing {len(filtered_df)} of {len(display_df)} trades")
-                                        
-                                        # Enhanced dataframe display with better formatting and error handling
-                                        def highlight_pl(val):
-                                            """Highlight positive/negative P&L values"""
-                                            try:
-                                                if isinstance(val, (int, float)):
-                                                    if val > 0:
-                                                        return 'background-color: #d4edda; color: #155724'  # Green
-                                                    elif val < 0:
-                                                        return 'background-color: #f8d7da; color: #721c24'  # Red
-                                                return ''
-                                            except:
-                                                return ''
-                                        
-                                        try:
-                                            # Format and style the dataframe
-                                            styled_df = filtered_df.style.format({
-                                                'Profit/Loss (%)': '{:.2f}%',
-                                                'Entry Price': '{:.2f}',
-                                                'Exit Price': '{:.2f}',
-                                                'Shares': '{:.0f}',
-                                                'Position Value': '${:,.0f}',
-                                                'P&L ($)': '${:,.0f}',
-                                                'Entry Date': lambda x: x.strftime('%d-%m-%Y') if hasattr(x, 'strftime') else x,
-                                                'Exit Date': lambda x: x.strftime('%d-%m-%Y') if hasattr(x, 'strftime') else x
-                                            }).applymap(
-                                                highlight_pl,
-                                                subset=['P&L ($)', 'Profit/Loss (%)']
-                                            )
-                                            
-                                            # Display the styled dataframe
-                                            st.dataframe(
-                                                styled_df,
-                                                use_container_width=True,
-                                                height=400
-                                            )
-                                        except Exception as e:
-                                            st.error(f"Error displaying dataframe: {e}")
-                                            # Fallback to simple display
-                                            st.dataframe(filtered_df, use_container_width=True, height=400)
-                                        
-                                        # Add sorting options with error handling
-                                        st.markdown("#### 📊 Sort Options")
-                                        sort_col1, sort_col2 = st.columns(2)
-                                        with sort_col1:
-                                            sort_by = st.selectbox(
-                                                "Sort by:",
-                                                options=['Exit Date', 'P&L ($)', 'Profit/Loss (%)', 'Position Value', 'Days Held'],
-                                                index=0
-                                            )
-                                        with sort_col2:
-                                            sort_ascending = st.checkbox("Ascending", value=False)
-                                        
-                                        if st.button("Apply Sort"):
-                                            try:
-                                                sorted_df = filtered_df.sort_values(by=sort_by, ascending=sort_ascending)
-                                                display_df = sorted_df.copy()
-                                                
-                                                # Ensure all required columns exist and have correct data types
-                                                numeric_cols = ['Profit/Loss (%)', 'Entry Price', 'Exit Price', 'Shares', 'Position Value', 'P&L ($)']
-                                                for col in numeric_cols:
-                                                    if col in display_df.columns:
-                                                        display_df[col] = pd.to_numeric(display_df[col], errors='coerce').fillna(0)
-                                                
-                                                # Ensure date columns are properly formatted
-                                                date_cols = ['Entry Date', 'Exit Date']
-                                                for col in date_cols:
-                                                    if col in display_df.columns:
-                                                        display_df[col] = pd.to_datetime(display_df[col], errors='coerce')
-                                                
-                                                # Safe formatting with error handling
-                                                try:
-                                                    styled_df = display_df.style.format({
-                                                        'Profit/Loss (%)': lambda x: f"{x:.2f}%" if pd.notna(x) else "0.00%",
-                                                        'Entry Price': lambda x: f"{x:.2f}" if pd.notna(x) else "0.00",
-                                                        'Exit Price': lambda x: f"{x:.2f}" if pd.notna(x) else "0.00",
-                                                        'Shares': lambda x: f"{x:.0f}" if pd.notna(x) else "0",
-                                                        'Position Value': lambda x: f"${x:,.0f}" if pd.notna(x) else "$0",
-                                                        'P&L ($)': lambda x: f"${x:,.0f}" if pd.notna(x) else "$0",
-                                                        'Entry Date': lambda x: x.strftime('%d-%m-%Y') if pd.notna(x) and hasattr(x, 'strftime') else "N/A",
-                                                        'Exit Date': lambda x: x.strftime('%d-%m-%Y') if pd.notna(x) and hasattr(x, 'strftime') else "N/A"
-                                                    })
-                                                    
-                                                    # Safe highlighting with error handling
-                                                    try:
-                                                        styled_df = styled_df.applymap(highlight_pl, subset=['P&L ($)', 'Profit/Loss (%)'])
-                                                    except Exception as highlight_error:
-                                                        st.warning(f"Warning: Could not apply highlighting: {highlight_error}")
-                                                    
-                                                    st.dataframe(styled_df, use_container_width=True, height=400)
-                                                    
-                                                except Exception as format_error:
-                                                    st.error(f"Error formatting data: {format_error}")
-                                                    # Fallback to basic display
-                                                    st.dataframe(display_df, use_container_width=True, height=400)
-                                                    
-                                            except Exception as e:
-                                                st.error(f"Error sorting data: {e}")
-                                                # Fallback to unsorted display
-                                                st.dataframe(filtered_df, use_container_width=True, height=400)
-                                                
-                                else:
-                                    # Safe display for unfiltered data
-                                    try:
-                                        display_df = trade_log_df.copy()
-                                        
-                                        # Ensure all required columns exist and have correct data types
-                                        numeric_cols = ['Profit/Loss (%)', 'Entry Price', 'Exit Price', 'Shares', 'Position Value', 'P&L ($)']
-                                        for col in numeric_cols:
-                                            if col in display_df.columns:
-                                                display_df[col] = pd.to_numeric(display_df[col], errors='coerce').fillna(0)
-                                        
-                                        # Ensure date columns are properly formatted
-                                        date_cols = ['Entry Date', 'Exit Date']
-                                        for col in date_cols:
-                                            if col in display_df.columns:
-                                                display_df[col] = pd.to_datetime(display_df[col], errors='coerce')
-                                        
-                                        # Safe formatting with error handling
-                                        try:
-                                            styled_df = display_df.style.format({
-                                                'Profit/Loss (%)': lambda x: f"{x:.2f}%" if pd.notna(x) else "0.00%",
-                                                'Entry Price': lambda x: f"{x:.2f}" if pd.notna(x) else "0.00",
-                                                'Exit Price': lambda x: f"{x:.2f}" if pd.notna(x) else "0.00",
-                                                'Shares': lambda x: f"{x:.0f}" if pd.notna(x) else "0",
-                                                'Position Value': lambda x: f"${x:,.0f}" if pd.notna(x) else "$0",
-                                                'P&L ($)': lambda x: f"${x:,.0f}" if pd.notna(x) else "$0",
-                                                'Entry Date': lambda x: x.strftime('%d-%m-%Y') if pd.notna(x) and hasattr(x, 'strftime') else "N/A",
-                                                'Exit Date': lambda x: x.strftime('%d-%m-%Y') if pd.notna(x) and hasattr(x, 'strftime') else "N/A"
-                                            })
-                                            
-                                            # Safe highlighting with error handling
-                                            try:
-                                                styled_df = styled_df.applymap(highlight, subset=['P&L ($)', 'Profit/Loss (%)'])
-                                            except Exception as highlight_error:
-                                                st.warning(f"Warning: Could not apply highlighting: {highlight_error}")
-                                            
-                                            st.dataframe(styled_df, use_container_width=True, height=400)
-                                            
-                                        except Exception as format_error:
-                                            st.error(f"Error formatting data: {format_error}")
-                                            # Fallback to basic display
-                                            st.dataframe(display_df, use_container_width=True, height=400)
-                                            
-                                    except Exception as display_error:
-                                        st.error(f"Error displaying trade log: {display_error}")
-                                        # Final fallback - basic display without formatting
-                                        st.dataframe(trade_log_df, use_container_width=True, height=400)
-                                
-                                # Download button for trade log (always show, but use filtered data if filters are applied)
-                                try:
-                                    download_df = filtered_df if 'filtered_df' in locals() and len(filtered_df) > 0 else trade_log_df
-                                    if download_df is not None and not download_df.empty:
-                                        csv = download_df.to_csv(index=False)
-                                        st.download_button(
-                                            label="Download Trade Log as CSV",
-                                            data=csv,
-                                            file_name=f"trade_log_df_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                            mime="text/csv"
-                                        )
-                                    else:
-                                        st.warning("No data available for download")
-                                except Exception as e:
-                                    st.error(f"Error preparing download: {e}")
-                                    
-                                    # Add timestamp to filename
-                                    from datetime import datetime
-                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                    filename = f"trade_log_df_{signal_type}_{timestamp}.csv"
-                                    
-                                    st.download_button(
-                                        f"📥 Download Trade Log ({len(download_df)} trades)",
-                                        csv,
-                                        filename,
-                                        "text/csv",
-                                        help=f"Download {'filtered' if 'filtered_df' in locals() and len(filtered_df) < len(trade_log_df) else 'complete'} trade log as CSV"
-                                    )
-                                except Exception as e:
-                                    st.error(f"Error preparing download: {e}")
-                                    # Show basic download as fallback
-                                    try:
-                                        csv = trade_log_df.to_csv(index=False)
-                                        st.download_button(
-                                            f"📥 Download Trade Log ({len(trade_log_df)} trades)",
-                                            csv,
-                                            f"trade_log_df_{signal_type}_fallback.csv",
-                                            "text/csv"
-                                        )
-                                    except:
-                                        st.error("Could not prepare download file")
-                                        
-                            except Exception as e:
-                                st.error(f"❌ Critical error in trade log filtering: {e}")
-                                st.info("🔄 Please try refreshing the page or resetting your filters.")
-                                # Show raw data as fallback
-                                try:
-                                    st.dataframe(trade_log_df, use_container_width=True, height=400)
-                                except:
-                                    st.error("Could not display trade data")
-                        
-                        with tab3:
-                            st.markdown("### Performance by Instrument")
-                            instrument_performance = trade_log_df.groupby('Ticker').agg({
-                                'Profit/Loss (%)': ['mean', 'sum', 'count', 'std'],
-                                'P&L ($)': ['mean', 'sum'],
-                                'Position Value': 'mean'
-                            })
-                            
-                            # Flatten column names
-                            instrument_performance.columns = [
-                                'Avg P/L (%)', 'Total P/L (%)', 'Trades', 'Volatility (%)',
-                                'Avg P/L ($)', 'Total P/L ($)', 'Avg Position ($)'
-                            ]
-                            instrument_performance = instrument_performance.sort_values(by='Total P/L ($)', ascending=False)
-                            
-                            # Add win rate per instrument
-                            win_rates = trade_log_df.groupby('Ticker').apply(
-                                lambda x: (x['Profit/Loss (%)'] > 0).sum() / len(x) * 100
-                            ).rename('Win Rate (%)')
-                            instrument_performance = instrument_performance.join(win_rates)
-                            
-                            st.dataframe(
-                                instrument_performance.style.format({
-                                    'Avg P/L (%)': '{:.2f}%', 
-                                    'Total P/L (%)': '{:.2f}%',
-                                    'Volatility (%)': '{:.2f}%',
-                                    'Win Rate (%)': '{:.1f}%',
-                                    'Avg P/L ($)': '${:,.0f}',
-                                    'Total P/L ($)': '${:,.0f}',
-                                    'Avg Position ($)': '${:,.0f}'
-                                }).background_gradient(subset=['Total P/L ($)'], cmap='RdYlGn'),
-                                use_container_width=True
-                            )
-                            
-                            # Top performers chart
-                            top_performers = instrument_performance.head(10)
-                            fig = px.bar(x=top_performers.index, y=top_performers['Total P/L ($)'],
-                                       title="Top 10 Performers by Total P&L",
-                                       labels={'x': 'Ticker', 'y': 'Total P&L ($)'})
-                            fig.update_layout(showlegend=False)
-                            st.plotly_chart(fig, use_container_width=True)
-                        
-                        with tab4:
-                            st.markdown("### Trade Analysis Dashboard")
-                            
-                            analysis_col1, analysis_col2 = st.columns(2)
-                            
-                            with analysis_col1:
-                                # Exit reason distribution
-                                if 'Exit Reason' in trade_log_df.columns:
-                                    exit_reasons = trade_log_df['Exit Reason'].value_counts()
-                                    fig = px.pie(values=exit_reasons.values, names=exit_reasons.index,
-                                               title="Trade Exit Reasons",
-                                               color_discrete_sequence=px.colors.qualitative.Set3)
-                                    st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Holding period distribution
-                                if 'Days Held' in trade_log_df.columns:
-                                    fig = px.histogram(trade_log_df, x='Days Held', nbins=20,
-                                                     title="Holding Period Distribution",
-                                                     labels={'Days Held': 'Days Held'})
-                                    st.plotly_chart(fig, use_container_width=True)
-                            
-                            with analysis_col2:
-                                # P&L distribution (percentage)
-                                fig = px.histogram(trade_log_df, x='Profit/Loss (%)', nbins=25,
-                                                 title="P&L Distribution (%)",
-                                                 color_discrete_sequence=['#1f77b4'])
-                                fig.add_vline(x=0, line_dash="dash", line_color="red",
-                                            annotation_text="Break-even")
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # P&L over time
-                                fig = px.scatter(trade_log_df, x='Exit Date', y='Profit/Loss (%)',
-                                               color='Exit Reason', size='Position Value',
-                                               title="P&L Over Time",
-                                               hover_data=['Ticker', 'Days Held'])
-                                fig.add_hline(y=0, line_dash="dash", line_color="red")
-                                st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Dollar P&L distribution
-                            if 'P&L ($)' in trade_log_df.columns:
-                                fig = px.histogram(trade_log_df, x='P&L ($)', nbins=25,
-                                                 title="P&L Distribution ($)",
-                                                 labels={'P&L ($)': 'P&L ($)'},
-                                                 color_discrete_sequence=['#2ca02c'])
-                                fig.add_vline(x=0, line_dash="dash", line_color="red",
-                                            annotation_text="Break-even")
-                                st.plotly_chart(fig, use_container_width=True)
-                        
-                        with tab5:
-                            st.markdown("### Position Sizing Analysis")
-                            
-                            pos_col1, pos_col2 = st.columns(2)
-                            
-                            with pos_col1:
-                                # Position size distribution
-                                if 'Position Value' in trade_log_df.columns:
-                                    fig = px.histogram(trade_log_df, x='Position Value', nbins=20,
-                                                     title="Position Size Distribution",
-                                                     labels={'Position Value': 'Position Value ($)'},
-                                                     color_discrete_sequence=['#ff7f0e'])
-                                    st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Position size statistics
-                                if 'Position Value' in trade_log_df.columns:
-                                    pos_stats = trade_log_df['Position Value'].describe()
-                                    st.markdown("**Position Size Statistics:**")
-                                    stats_df = pd.DataFrame({
-                                        'Statistic': pos_stats.index,
-                                        'Value ($)': [f"${x:,.0f}" for x in pos_stats.values]
-                                    })
-                                    st.dataframe(stats_df, use_container_width=True)
-                            
-                            with pos_col2:
-                                # Position size over time
-                                if 'Position Value' in trade_log_df.columns and 'Entry Date' in trade_log_df.columns:
-                                    fig = px.scatter(trade_log_df, x='Entry Date', y='Position Value',
-                                                   color='Profit/Loss (%)',
-                                                   title="Position Size Over Time",
-                                                   labels={'Position Value': 'Position Value ($)'},
-                                                   hover_data=['Ticker', 'P&L ($)'],
-                                                   color_continuous_scale='RdYlGn')
-                                    st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Position size vs P&L correlation
-                                if 'Position Value' in trade_log_df.columns and 'P&L ($)' in trade_log_df.columns:
-                                    fig = px.scatter(trade_log_df, x='Position Value', y='P&L ($)',
-                                                   color='Signal Type',
-                                                   title="Position Size vs P&L Correlation",
-                                                   hover_data=['Ticker', 'Exit Reason'])
-                                    st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Show sizing method info
-                                st.markdown("**Position Sizing Configuration:**")
-                                st.info(f"**Method:** {sizing_method.replace('_', ' ').title()}")
-                                if sizing_params:
-                                    for key, value in sizing_params.items():
-                                        if isinstance(value, float):
-                                            st.write(f"• {key.replace('_', ' ').title()}: {value:.2f}")
-                                        else:
-                                            st.write(f"• {key.replace('_', ' ').title()}: {value}")
-                        
-                        with tab6:
-                            st.markdown("### Monte Carlo Analysis")
-                            
-                        with tab7:
-                            st.markdown("### ⚖️ Leverage Metrics Analysis")
-                            
-                            # Check if we have leverage data
-                            if 'Leverage Used' not in trade_log_df.columns:
-                                st.warning("⚠️ No leverage data available. This may be because no trades were executed or leverage tracking is not enabled.")
-                                st.info("💡 Leverage metrics are calculated based on position size relative to available capital.")
-                            else:
-                                # Get leverage metrics from performance metrics
-                                leverage_metrics = performance_metrics.get('Leverage Metrics', {})
-                                
-                                # Display key leverage metrics
-                                st.markdown("#### 📊 Key Leverage Metrics")
-                                leverage_col1, leverage_col2, leverage_col3, leverage_col4 = st.columns(4)
-                                
-                                with leverage_col1:
-                                    avg_leverage = performance_metrics.get('Avg Leverage Used', 1.0)
-                                    st.metric("Average Leverage", f"{avg_leverage:.2f}x")
-                                    if avg_leverage > 2.0:
-                                        st.warning("⚠️ High average leverage detected")
-                                    elif avg_leverage > 1.5:
-                                        st.info("ℹ️ Moderate leverage usage")
-                                    else:
-                                        st.success("✓ Conservative leverage usage")
-                                
-                                with leverage_col2:
-                                    max_leverage = performance_metrics.get('Max Leverage Used', 1.0)
-                                    st.metric("Maximum Leverage", f"{max_leverage:.2f}x")
-                                    if max_leverage > 3.0:
-                                        st.error("🚨 Very high leverage detected")
-                                    elif max_leverage > 2.0:
-                                        st.warning("⚠️ High maximum leverage")
-                                
-                                with leverage_col3:
-                                    leverage_risk_score = performance_metrics.get('Leverage Risk Score', 0)
-                                    st.metric("Leverage Risk Score", f"{leverage_risk_score:.2f}")
-                                    if leverage_risk_score > 0.7:
-                                        st.error("🚨 High leverage risk")
-                                    elif leverage_risk_score > 0.4:
-                                        st.warning("⚠️ Moderate leverage risk")
-                                    else:
-                                        st.success("✓ Low leverage risk")
-                                
-                                with leverage_col4:
-                                    leverage_perf_corr = performance_metrics.get('Leverage Performance Correlation', 0)
-                                    st.metric("Leverage-Performance Correlation", f"{leverage_perf_corr:.3f}")
-                                    if leverage_perf_corr > 0.3:
-                                        st.success("✓ Positive correlation")
-                                    elif leverage_perf_corr < -0.3:
-                                        st.warning("⚠️ Negative correlation")
-                                    else:
-                                        st.info("ℹ️ Weak correlation")
-                                
-                                # Create leverage visualizations
-                                st.markdown("#### 📈 Leverage Visualizations")
-                                
-                                # Leverage distribution chart
-                                leverage_dist_fig = create_leverage_distribution_chart(trade_log_df)
-                                if leverage_dist_fig:
-                                    st.plotly_chart(leverage_dist_fig, use_container_width=True)
-                                
-                                # Leverage vs performance scatter
-                                leverage_perf_fig = create_leverage_performance_scatter(trade_log_df)
-                                if leverage_perf_fig:
-                                    st.plotly_chart(leverage_perf_fig, use_container_width=True)
-                                
-                                # Leverage timeline
-                                leverage_timeline_fig = create_leverage_timeline(trade_log_df)
-                                if leverage_timeline_fig:
-                                    st.plotly_chart(leverage_timeline_fig, use_container_width=True)
-                                
-                                # Leverage risk dashboard
-                                leverage_risk_fig = create_leverage_risk_dashboard(trade_log_df)
-                                if leverage_risk_fig:
-                                    st.plotly_chart(leverage_risk_fig, use_container_width=True)
-                                
-                                # Leverage analysis summary
-                                st.markdown("#### 📋 Leverage Analysis Summary")
-                                
-                                # Calculate additional leverage insights
-                                leverage_data = trade_log_df['Leverage Used']
-                                high_leverage_trades = (leverage_data > 2.0).sum()
-                                very_high_leverage_trades = (leverage_data > 3.0).sum()
-                                total_trades = len(leverage_data)
-                                
-                                leverage_summary_col1, leverage_summary_col2 = st.columns(2)
-                                
-                                with leverage_summary_col1:
-                                    st.markdown("**Leverage Usage Statistics:**")
-                                    st.write(f"• Total trades with leverage data: {total_trades}")
-                                    st.write(f"• Trades with >2x leverage: {high_leverage_trades} ({high_leverage_trades/total_trades*100:.1f}%)")
-                                    st.write(f"• Trades with >3x leverage: {very_high_leverage_trades} ({very_high_leverage_trades/total_trades*100:.1f}%)")
-                                    st.write(f"• Average leverage: {leverage_data.mean():.2f}x")
-                                    st.write(f"• Median leverage: {leverage_data.median():.2f}x")
-                                    st.write(f"• Standard deviation: {leverage_data.std():.2f}x")
-                                
-                                with leverage_summary_col2:
-                                    st.markdown("**Risk Assessment:**")
-                                    
-                                    # Calculate risk level
-                                    if leverage_data.mean() > 2.5:
-                                        risk_level = "🚨 High Risk"
-                                        risk_color = "red"
-                                    elif leverage_data.mean() > 1.5:
-                                        risk_level = "⚠️ Moderate Risk"
-                                        risk_color = "orange"
-                                    else:
-                                        risk_level = "✓ Low Risk"
-                                        risk_color = "green"
-                                    
-                                    st.markdown(f"<div style='color: {risk_color}; font-size: 1.2em; font-weight: bold;'>{risk_level}</div>", unsafe_allow_html=True)
-                                    
-                                    # Recommendations
-                                    if leverage_data.max() > 4.0:
-                                        st.warning("Consider reducing maximum leverage to below 4x")
-                                    if leverage_data.std() > 1.0:
-                                        st.warning("High leverage variability - consider more consistent sizing")
-                                    if leverage_perf_corr < -0.2:
-                                        st.warning("Negative correlation between leverage and performance")
-                                    
-                                    # Performance by leverage level
-                                    if 'Profit/Loss (%)' in trade_log_df.columns:
-                                        low_leverage_perf = trade_log_df[leverage_data <= 1.5]['Profit/Loss (%)'].mean()
-                                        high_leverage_perf = trade_log_df[leverage_data > 2.0]['Profit/Loss (%)'].mean()
-                                        
-                                        st.write(f"• Low leverage (≤1.5x) avg return: {low_leverage_perf:.2f}%")
-                                        st.write(f"• High leverage (>2.0x) avg return: {high_leverage_perf:.2f}%")
-                                        
-                                        if high_leverage_perf > low_leverage_perf:
-                                            st.success("✓ High leverage shows better performance")
-                                        else:
-                                            st.warning("⚠️ High leverage shows lower performance")
-                                
-                                # Download leverage data
-                                if 'Leverage Used' in trade_log_df.columns:
-                                    leverage_data_csv = trade_log_df[['Ticker', 'Entry Date', 'Exit Date', 'Leverage Used', 'Profit/Loss (%)', 'Position Value']].to_csv(index=False)
-                                    st.download_button(
-                                        "📥 Download Leverage Data",
-                                        leverage_data_csv,
-                                        "leverage_metrics.csv",
-                                        "text/csv",
-                                        key="leverage_download"
-                                    )
-                            st.info("Monte Carlo simulation showing potential future outcomes based on historical trade statistics")
-                            
-                            # Enhanced Monte Carlo simulation
-                            if len(trade_log_df) > 10:
-                                returns = trade_log_df['Profit/Loss (%)'] / 100
-                                
-                                monte_col1, monte_col2 = st.columns([2, 1])
-                                with monte_col1:
-                                    n_simulations = st.slider("Number of Simulations", 100, 2000, 1000)
-                                    n_trades = st.slider("Future Trades to Simulate", 10, 200, 50)
-                                with monte_col2:
-                                    confidence_level = st.selectbox("Confidence Level", [90, 95, 99], index=1)
-                                    include_current_performance = st.checkbox("Include Current Performance", value=True)
-                                
-                                if st.button("🎲 Run Monte Carlo Simulation"):
-                                    with st.spinner("Running Monte Carlo simulation..."):
-                                        simulations = []
-                                        for _ in range(n_simulations):
-                                            sim_returns = np.random.choice(returns, n_trades, replace=True)
-                                            final_return = np.prod(1 + sim_returns) - 1
-                                            simulations.append(final_return * 100)
-                                        
-                                        # Create enhanced visualization
-                                        fig = px.histogram(simulations, nbins=50,
-                                                         title=f"Monte Carlo Simulation: {n_trades} Future Trades ({n_simulations} simulations)")
-                                        
-                                        # Add statistical lines
-                                        mean_sim = np.mean(simulations)
-                                        fig.add_vline(x=mean_sim, line_dash="dash", line_color="blue",
-                                                    annotation_text=f"Mean: {mean_sim:.2f}%")
-                                        
-                                        # Add confidence intervals
-                                        lower_ci = np.percentile(simulations, (100-confidence_level)/2)
-                                        upper_ci = np.percentile(simulations, 100-(100-confidence_level)/2)
-                                        
-                                        fig.add_vline(x=lower_ci, line_dash="dot", line_color="red",
-                                                    annotation_text=f"{confidence_level}% CI Lower: {lower_ci:.2f}%")
-                                        fig.add_vline(x=upper_ci, line_dash="dot", line_color="green",
-                                                    annotation_text=f"{confidence_level}% CI Upper: {upper_ci:.2f}%")
-                                        
-                                        st.plotly_chart(fig, use_container_width=True)
-                                        
-                                        # Enhanced statistics
-                                        monte_stats_col1, monte_stats_col2, monte_stats_col3, monte_stats_col4 = st.columns(4)
-                                        monte_stats_col1.metric("Expected Return", f"{mean_sim:.2f}%")
-                                        monte_stats_col2.metric(f"{(100-confidence_level)//2}th Percentile", f"{lower_ci:.2f}%")
-                                        monte_stats_col3.metric(f"{100-(100-confidence_level)//2}th Percentile", f"{upper_ci:.2f}%")
-                                        monte_stats_col4.metric("Std Deviation", f"{np.std(simulations):.2f}%")
-                                        
-                                        # Risk metrics
-                                        prob_loss = (np.array(simulations) < 0).mean() * 100
-                                        prob_large_loss = (np.array(simulations) < -20).mean() * 100
-                                        
-                                        risk_col1, risk_col2 = st.columns(2)
-                                        risk_col1.metric("Probability of Loss", f"{prob_loss:.1f}%")
-                                        risk_col2.metric("Probability of >20% Loss", f"{prob_large_loss:.1f}%")
-                            else:
-                                st.warning("⚠️ Need at least 10 trades to run Monte Carlo simulation")
-                    
-                    else:
-                        st.warning("⚠️ No trades were executed for the selected parameters.")
-                        
-                        # Enhanced troubleshooting section
-                        st.markdown("### 🔧 Troubleshooting Guide")
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown("**Common Issues:**")
-                            st.write("• Ticker names don't match between files")
-                            st.write("• Signal dates outside OHLCV data range") 
-                            st.write("• Insufficient data for holding period")
-                            st.write("• Date format inconsistencies")
-                        
-                        with col2:
-                            st.markdown("**Solutions:**")
-                            st.write("• Check ticker name consistency")
-                            st.write("• Verify date ranges overlap")
-                            st.write("• Reduce holding period")
-                            st.write("• Check date format (DD-MM-YYYY)")
 
         else:  # Parameter Optimization Mode
             st.sidebar.markdown("### 🔧 Optimization Parameters")
@@ -2944,6 +2090,31 @@ if ohlcv_file and signals_file:
                                 ohlcv_df, filtered_signals, holding_periods, stop_losses, take_profits,
                                 one_trade_per_instrument, initial_capital, sizing_method, sizing_params, signal_type
                             )
+                        
+                        # Store optimization results in session state to prevent recalculation
+                        if not optimization_results.empty:
+                            st.session_state['optimization_results'] = optimization_results
+                            st.session_state['optimization_params'] = {
+                                'holding_periods': holding_periods,
+                                'stop_losses': stop_losses,
+                                'take_profits': take_profits,
+                                'one_trade_per_instrument': one_trade_per_instrument,
+                                'initial_capital': initial_capital,
+                                'sizing_method': sizing_method,
+                                'sizing_params': sizing_params,
+                                'signal_type': signal_type,
+                                'use_multiprocessing': use_multiprocessing,
+                                'max_workers': max_workers,
+                                'allow_leverage': allow_leverage
+                            }
+                            st.success("✅ Optimization results cached in session state")
+                        else:
+                            # Clear session state if no results
+                            if 'optimization_results' in st.session_state:
+                                del st.session_state['optimization_results']
+                            if 'optimization_params' in st.session_state:
+                                del st.session_state['optimization_params']
+                            st.warning("⚠️ No valid results from optimization.")
                     
                     if not optimization_results.empty:
                         st.success(f"✅ Optimization completed! Found {len(optimization_results)} valid parameter combinations.")
@@ -3082,7 +2253,7 @@ if ohlcv_file and signals_file:
                                         st.markdown("**Parameters:**")
                                         st.write(f"• Holding Period: {best_strategy['Holding Period']} days")
                                         st.write(f"• Stop Loss: {best_strategy['Stop Loss (%)']}%")
-                                        if 'Take Profit (%)' in best_strategy and best_strategy['Take Profit (%)'] > 0:
+                                        if 'Take Profit (%)' in best_strategy and float(best_strategy['Take Profit (%)'].values[0]) > 0:
                                             st.write(f"• Take Profit: {best_strategy['Take Profit (%)']}%")
                                     
                                     with strategy_col2:
@@ -3095,7 +2266,7 @@ if ohlcv_file and signals_file:
                                         st.markdown("**Risk Metrics:**")
                                         st.write(f"• Max Drawdown: {best_strategy['Max Drawdown (%)']:.2f}%")
                                         st.write(f"• Profit Factor: {best_strategy['Profit Factor']:.2f}")
-                                        st.write(f"• Total Trades: {int(best_strategy['Total Trades'])}")
+                                        st.write(f"• Total Trades: {int(float(best_strategy['Total Trades'].values[0]))}")
                         
                         # Download optimization results with enhanced filename
                         csv = optimization_results.to_csv(index=False)
@@ -3112,6 +2283,15 @@ if ohlcv_file and signals_file:
         import traceback
         with st.expander("🔧 Detailed Error Information"):
             st.code(traceback.format_exc())
+    
+    # Clear session state on file change
+    if ohlcv_file is not None and signals_file is not None:
+        if 'ohlcv_file_name' not in st.session_state or st.session_state.ohlcv_file_name != ohlcv_file.name:
+            st.session_state.clear()
+            st.session_state['ohlcv_file_name'] = ohlcv_file.name
+        if 'signals_file_name' not in st.session_state or st.session_state.signals_file_name != signals_file.name:
+            st.session_state.clear()
+            st.session_state['signals_file_name'] = signals_file.name
 
 else:
     # Enhanced welcome screen
@@ -3266,3 +2446,239 @@ st.markdown(
     '</div>', 
     unsafe_allow_html=True
 )
+# --- Presentation Block (runs independently) ---
+if 'backtest_results' in st.session_state and not st.session_state['backtest_results'].empty:
+    trade_log_df = st.session_state['backtest_results']
+    params = st.session_state['backtest_params']
+    
+    initial_capital = params.get('initial_capital', 100000)
+    signal_type = params.get('signal_type', 'long')
+    
+    performance_metrics = calculate_performance_metrics(trade_log_df, initial_capital)
+    
+    st.markdown("## 📊 Backtest Results")
+    st.markdown(f"""
+    <div style="background: linear-gradient(90deg, #28a745, #20c997); padding: 1rem; border-radius: 10px; color: white; text-align: center; margin-bottom: 2rem;">
+        <h3>✅ Backtest Completed Successfully!</h3>
+        <p>Analyzed <strong>{performance_metrics.get('Total Trades', 0)}</strong> {signal_type.upper()} trades across <strong>{trade_log_df['Ticker'].nunique()}</strong> instruments</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Enhanced KPI display
+    st.markdown("### 🎯 Key Performance Indicators")
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
+    with kpi_col1:
+        st.metric("Total Return", f"{performance_metrics.get('Total Return (%)', 0):.2f}%", 
+                 help=f"Total portfolio return from {signal_type} signals")
+        st.metric("Total P&L", f"${performance_metrics.get('Total P&L ($)', 0):,.0f}")
+    with kpi_col2:
+        st.metric("Win Rate", f"{performance_metrics.get('Win Rate (%)', 0):.2f}%")
+        st.metric("Profit Factor", f"{performance_metrics.get('Profit Factor', 0):.2f}")
+    with kpi_col3:
+        st.metric("Max Drawdown", f"{performance_metrics.get('Max Drawdown (%)', 0):.2f}%")
+        st.metric("Sharpe Ratio", f"{performance_metrics.get('Sharpe Ratio', 0):.3f}")
+    with kpi_col4:
+        st.metric("Total Trades", f"{performance_metrics.get('Total Trades', 0)}")
+        st.metric("Avg Win", f"{performance_metrics.get('Average Win (%)', 0):.2f}%")
+    with kpi_col5:
+        st.metric("Avg Position", f"${performance_metrics.get('Average Position Size ($)', 0):,.0f}")
+        st.metric("Max Position", f"${performance_metrics.get('Max Position Size ($)', 0):,.0f}")
+
+    # Tabs for detailed analysis
+    tab1, tab_invested, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📈 Equity Curve", "📊 Invested Capital", "📋 Trade Log", "🏢 Per-Instrument",
+        "📊 Trade Analysis", "📏 Position Sizing", "🎲 Monte Carlo", "⚖️ Leverage Metrics"
+    ])
+    
+    with tab1:
+        st.markdown("### Portfolio Performance Over Time")
+        equity_curve = performance_metrics.get("Equity Curve")
+        if equity_curve is not None:
+            fig = px.line(equity_curve, x=equity_curve.index, y='Portfolio Value', 
+                        title=f"Portfolio Value Over Time ({signal_type.upper()} Signals)",
+                        labels={'Portfolio Value': 'Portfolio Value ($)', 'Exit Date': 'Date'})
+            fig.add_hline(y=initial_capital, line_dash="dash", 
+                        annotation_text=f"Starting Capital: ${initial_capital:,}")
+            fig.update_layout(hovermode='x', height=500)
+            st.plotly_chart(fig, use_container_width=True)
+            final_value = equity_curve['Portfolio Value'].iloc[-1]
+            total_return = ((final_value / initial_capital) - 1) * 100
+            st.info(f"📊 Final Portfolio Value: ${final_value:,.0f} | Total Return: {total_return:.2f}%")
+
+    with tab_invested:
+        st.markdown("### Net Invested Value Over Time")
+        invested_value_df = calculate_invested_value_over_time(trade_log_df)
+        if not invested_value_df.empty:
+            fig = px.line(invested_value_df, x='Date', y='Invested Value',
+                        title="Net Invested Value Over Time",
+                        labels={'Invested Value': 'Invested Value ($)', 'Date': 'Date'})
+            fig.update_layout(hovermode='x', height=500)
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown("#### Invested Value Data")
+            st.dataframe(invested_value_df.style.format({'Invested Value': '${:,.0f}'}), use_container_width=True)
+        else:
+            st.info("No invested value data to display.")
+
+    with tab2:
+        st.markdown("### Detailed Trade Log")
+        
+        # Add filtering options for trade log
+        st.markdown("#### 🔍 Filter Options")
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        
+        with filter_col1:
+            all_tickers = ['All'] + sorted(trade_log_df['Ticker'].unique())
+            ticker_filter = st.selectbox("Filter by Ticker:", all_tickers, key="ticker_filter_2")
+        
+        with filter_col2:
+            outcome_filter = st.selectbox("Filter by Outcome:", ['All', 'Winners', 'Losers'], key="outcome_filter_2")
+            
+        with filter_col3:
+            all_exit_reasons = ['All'] + sorted(trade_log_df['Exit Reason'].unique())
+            exit_reason_filter = st.selectbox("Filter by Exit Reason:", all_exit_reasons, key="exit_reason_filter_2")
+            
+        # Apply filters
+        filtered_df = trade_log_df.copy()
+        if ticker_filter != 'All':
+            filtered_df = filtered_df[filtered_df['Ticker'] == ticker_filter]
+        if outcome_filter == 'Winners':
+            filtered_df = filtered_df[filtered_df['Profit/Loss (%)'] > 0]
+        elif outcome_filter == 'Losers':
+            filtered_df = filtered_df[filtered_df['Profit/Loss (%)'] <= 0]
+        if exit_reason_filter != 'All':
+            filtered_df = filtered_df[filtered_df['Exit Reason'] == exit_reason_filter]
+            
+        st.dataframe(filtered_df)
+
+    with tab3:
+        st.markdown("### Performance by Instrument")
+        instrument_performance = trade_log_df.groupby('Ticker').agg({
+            'Profit/Loss (%)': ['mean', 'sum', 'count', 'std'],
+            'P&L ($)': ['mean', 'sum'],
+            'Position Value': 'mean'
+        })
+        instrument_performance.columns = [
+            'Avg P/L (%)', 'Total P/L (%)', 'Trades', 'Volatility (%)',
+            'Avg P/L ($)', 'Total P/L ($)', 'Avg Position ($)'
+        ]
+        instrument_performance = instrument_performance.sort_values(by='Total P/L ($)', ascending=False)
+        win_rates = trade_log_df.groupby('Ticker').apply(
+            lambda x: (x['Profit/Loss (%)'] > 0).sum() / len(x) * 100
+        ).rename('Win Rate (%)')
+        instrument_performance = instrument_performance.join(win_rates)
+        st.dataframe(
+            instrument_performance.style.format({
+                'Avg P/L (%)': '{:.2f}%', 'Total P/L (%)': '{:.2f}%',
+                'Volatility (%)': '{:.2f}%', 'Win Rate (%)': '{:.1f}%',
+                'Avg P/L ($)': '${:,.0f}', 'Total P/L ($)': '${:,.0f}',
+                'Avg Position ($)': '${:,.0f}'
+            }).background_gradient(subset=['Total P/L ($)'], cmap='RdYlGn'),
+            use_container_width=True
+        )
+
+    with tab4:
+        st.markdown("### Trade Analysis Dashboard")
+        
+        analysis_col1, analysis_col2 = st.columns(2)
+        
+        with analysis_col1:
+            # Exit reason distribution
+            exit_reasons = trade_log_df['Exit Reason'].value_counts()
+            fig = px.pie(values=exit_reasons.values, names=exit_reasons.index,
+                       title="Trade Exit Reasons",
+                       color_discrete_sequence=px.colors.qualitative.Set3)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Holding period distribution
+            fig = px.histogram(trade_log_df, x='Days Held', nbins=20,
+                             title="Holding Period Distribution",
+                             labels={'Days Held': 'Days Held'})
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with analysis_col2:
+            # P&L distribution (percentage)
+            fig = px.histogram(trade_log_df, x='Profit/Loss (%)', nbins=25,
+                             title="P&L Distribution (%)",
+                             color_discrete_sequence=['#1f77b4'])
+            fig.add_vline(x=0, line_dash="dash", line_color="red",
+                        annotation_text="Break-even")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # P&L over time
+            fig = px.scatter(trade_log_df, x='Exit Date', y='Profit/Loss (%)',
+                           color='Exit Reason', size='Position Value',
+                           title="P&L Over Time",
+                           hover_data=['Ticker', 'Days Held'])
+            fig.add_hline(y=0, line_dash="dash", line_color="red")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with tab5:
+        st.markdown("### Position Sizing Analysis")
+        
+        pos_col1, pos_col2 = st.columns(2)
+        
+        with pos_col1:
+            # Position size distribution
+            fig = px.histogram(trade_log_df, x='Position Value', nbins=20,
+                             title="Position Size Distribution",
+                             labels={'Position Value': 'Position Value ($)'},
+                             color_discrete_sequence=['#ff7f0e'])
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with pos_col2:
+            # Position size over time
+            fig = px.scatter(trade_log_df, x='Entry Date', y='Position Value',
+                           color='Profit/Loss (%)',
+                           title="Position Size Over Time",
+                           labels={'Position Value': 'Position Value ($)'},
+                           hover_data=['Ticker', 'P&L ($)'],
+                           color_continuous_scale='RdYlGn')
+            st.plotly_chart(fig, use_container_width=True)
+
+    with tab6:
+        st.markdown("### Monte Carlo Analysis")
+        
+        if len(trade_log_df) > 10:
+            returns = trade_log_df['Profit/Loss (%)'] / 100
+            
+            n_simulations = st.slider("Number of Simulations", 100, 2000, 1000, key="mc_sims_2")
+            n_trades = st.slider("Future Trades to Simulate", 10, 200, 50, key="mc_trades_2")
+            
+            if st.button("🎲 Run Monte Carlo Simulation", key="mc_run_2"):
+                with st.spinner("Running Monte Carlo simulation..."):
+                    simulations = []
+                    for _ in range(n_simulations):
+                        sim_returns = np.random.choice(returns, n_trades, replace=True)
+                        final_return = np.prod(1 + sim_returns) - 1
+                        simulations.append(final_return * 100)
+                    
+                    fig = px.histogram(simulations, nbins=50,
+                                     title=f"Monte Carlo Simulation: {n_trades} Future Trades ({n_simulations} simulations)")
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Need at least 10 trades to run Monte Carlo simulation")
+
+    with tab7:
+        st.markdown("### ⚖️ Leverage Metrics Analysis")
+        
+        leverage_metrics = performance_metrics.get('Leverage Metrics', {})
+        
+        if leverage_metrics:
+            st.markdown("#### 📊 Key Leverage Metrics")
+            leverage_col1, leverage_col2, leverage_col3, leverage_col4 = st.columns(4)
+            
+            with leverage_col1:
+                st.metric("Average Leverage", f"{leverage_metrics.get('Average Leverage', 0):.2f}x")
+            with leverage_col2:
+                st.metric("Maximum Leverage", f"{leverage_metrics.get('Max Leverage', 0):.2f}x")
+            with leverage_col3:
+                st.metric("Leverage Risk Score", f"{leverage_metrics.get('Leverage Risk Score', 0):.2f}")
+            with leverage_col4:
+                st.metric("Leverage-Performance Correlation", f"{leverage_metrics.get('Leverage Performance Correlation', 0):.3f}")
+
+            # Leverage distribution chart
+            leverage_dist_fig = create_leverage_distribution_chart(trade_log_df)
+            if leverage_dist_fig:
+                st.plotly_chart(leverage_dist_fig, use_container_width=True)
+        else:
+            st.warning("⚠️ No leverage data available.")
